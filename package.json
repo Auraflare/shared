@@ -1,0 +1,25 @@
+{
+	"name": "@auraflare/shared",
+	"description": "Shared Library",
+	"main": "index.mjs",
+	"type": "module",
+	"scripts": {
+		"test": "test"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/Auraflare/shared.git"
+	},
+	"keywords": [
+		"Cloudflare"
+	],
+	"author": "VirgilClyne",
+	"license": "Apache-2.0",
+	"bugs": {
+		"url": "https://github.com/Auraflare/shared/issues"
+	},
+	"homepage": "https://github.com/Auraflare/shared#readme",
+	"dependencies": {
+		"@nsnanocat/util": "^1.7.6"
+	}
+}
