@@ -2,6 +2,7 @@
 	"name": "@auraflare/shared",
 	"description": "Shared Library",
 	"main": "index.mjs",
+	"types": "index.d.ts",
 	"type": "module",
 	"scripts": {
 		"test": "test"
@@ -20,6 +21,6 @@
 	},
 	"homepage": "https://github.com/Auraflare/shared#readme",
 	"dependencies": {
-		"@nsnanocat/util": "^1.7.6"
+		"@nsnanocat/util": "^2.4.1"
 	}
 }
