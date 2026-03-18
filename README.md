@@ -2,7 +2,7 @@
 
 `@auraflare/shared` 提供两组能力：
 
-- `Cloudflare`：Cloudflare API 的最小客户端封装（保留当前项目在用能力）
+- `Cloudflare`：Cloudflare API 客户端封装（当前对齐 `DNS records + KV`）
 - `KV`：`Storage` 风格的 KV 适配器（支持 Worker `KVNamespace`、Cloudflare REST、本地回退）
 
 ## Installation
@@ -38,6 +38,7 @@ import Cloudflare, { KV } from "@auraflare/shared";
 
 - `ClientOptions`
 - `RequestOptions`
+- `records + kv` 相关参数与响应类型（如 `Record*` / `Namespace*` / `Key*` / `Value*` / `Metadata*`）
 
 ```ts
 import Cloudflare, { CloudflareResponse, CloudflareAPIError } from "@auraflare/shared/Cloudflare";
@@ -99,6 +100,8 @@ const client = new Cloudflare({
 2. `apiKey + apiEmail`
 3. `userServiceKey`
 
+默认 `baseURL` 为 `https://api.cloudflare.com/client/v4`。
+
 ### Supported Methods (Current)
 
 ```ts
@@ -112,9 +115,32 @@ client.dns.records.create(params);
 client.dns.records.get(dnsRecordId, { zone_id });
 client.dns.records.list({ zone_id });
 client.dns.records.update(dnsRecordId, params);
+client.dns.records.delete(dnsRecordId, { zone_id });
+client.dns.records.batch({ zone_id, ... });
+client.dns.records.edit(dnsRecordId, params);
+client.dns.records.export({ zone_id });
+client.dns.records.import({ zone_id, file, proxied });
+client.dns.records.scan({ zone_id, body });
+client.dns.records.scanList({ zone_id });
+client.dns.records.scanReview({ zone_id, accepts, rejects });
+client.dns.records.scanTrigger({ zone_id });
 
+client.kv.namespaces.create({ account_id, title });
+client.kv.namespaces.update(namespaceId, { account_id, title });
 client.kv.namespaces.list({ account_id });
+client.kv.namespaces.get(namespaceId, { account_id });
+client.kv.namespaces.delete(namespaceId, { account_id });
+client.kv.namespaces.bulkDelete(namespaceId, { account_id, body: ["k1"] });
+client.kv.namespaces.bulkGet(namespaceId, { account_id, keys: ["k1"] });
+client.kv.namespaces.bulkUpdate(namespaceId, { account_id, body: [{ key: "k1", value: "v1" }] });
+
 client.kv.namespaces.keys.list(namespaceId, { account_id });
+client.kv.namespaces.keys.bulkDelete(namespaceId, { account_id, body: ["k1"] });
+client.kv.namespaces.keys.bulkGet(namespaceId, { account_id, keys: ["k1"] });
+client.kv.namespaces.keys.bulkUpdate(namespaceId, { account_id, body: [{ key: "k1", value: "v1" }] });
+
+client.kv.namespaces.metadata.get(namespaceId, keyName, { account_id });
+
 client.kv.namespaces.values.get(namespaceId, keyName, { account_id });
 client.kv.namespaces.values.update(namespaceId, keyName, { account_id, value });
 client.kv.namespaces.values.delete(namespaceId, keyName, { account_id });

@@ -162,14 +162,14 @@ export class CloudflareResponse {
 			headers?: HeadersInit | HeadersLike;
 			url?: string;
 		} = {},
-	) {
-		this.#body = typeof body === "string" ? body : body.slice(0);
-		this.status = init.status ?? 200;
-		this.statusText = init.statusText ?? "";
-		this.headers = new Headers(normalizeHeadersInit(init.headers));
-		this.url = init.url ?? "";
-		this.ok = this.status >= 200 && this.status < 300;
-	}
+		) {
+			this.#body = typeof body === "string" ? body : body.slice(0);
+			this.status = init.status ?? 200;
+			this.statusText = init.statusText ?? "";
+			this.headers = new Headers(init.headers as HeadersInit | undefined);
+			this.url = init.url ?? "";
+			this.ok = this.status >= 200 && this.status < 300;
+		}
 
 	/**
 	 * 读取文本响应体。
@@ -1133,7 +1133,13 @@ class ZonesResource extends APIResource {
 		queryOrOptions?: ZoneListParams | RequestOptions,
 		options?: RequestOptions,
 	): PagePromise<ZonesV4PagePaginationArray, Zone> {
-		const { query, requestOptions } = normalizeOptionalQuery(queryOrOptions, options);
+		// Keep the existing "query or options" call style without relying on extra helpers.
+		const isOptions =
+			typeof queryOrOptions === "object" &&
+			queryOrOptions !== null &&
+			["headers", "query", "timeout", "maxRetries", "fetch"].some(key => key in queryOrOptions);
+		const query = isOptions ? {} : ({ ...((queryOrOptions as ZoneListParams | undefined) ?? {}) } as QueryLike);
+		const requestOptions = isOptions ? (queryOrOptions as RequestOptions) : options;
 		return getAPIList<ZonesV4PagePaginationArray, Zone>(
 			this._client,
 			"/zones",
@@ -1331,9 +1337,12 @@ class DNSRecordsResource extends APIResource {
 	 */
 	import(params: RecordImportParams, options?: RequestOptions): Promise<RecordImportResponse> {
 		const { zone_id, file, proxied } = params;
+		const formData = new FormData();
+		formData.append("file", file);
+		if (proxied !== undefined) formData.append("proxied", proxied);
 		return postResult<RecordImportResponse>(this._client, `/zones/${encodeURIComponent(zone_id)}/dns_records/import`, {
 			...options,
-			body: createRecordImportBody(file, proxied),
+			body: formData,
 		});
 	}
 
@@ -1753,7 +1762,19 @@ class ValuesResource extends APIResource {
 		options?: RequestOptions,
 	): Promise<ValueUpdateResponse | null> {
 		const { account_id, expiration, expiration_ttl, value, metadata } = params;
-		const body = createKVValueBody(value, metadata);
+		let body: string | FormData = value;
+		let headers: HeadersLike = {
+			...options?.headers,
+			"Content-Type": "text/plain;charset=UTF-8",
+		};
+		// Cloudflare KV uses multipart when metadata is present.
+		if (metadata !== undefined) {
+			const formData = new FormData();
+			formData.append("value", value);
+			formData.append("metadata", JSON.stringify(metadata));
+			body = formData;
+			headers = { ...options?.headers };
+		}
 		return putResult<ValueUpdateResponse | null>(
 			this._client,
 			`/accounts/${encodeURIComponent(account_id)}/storage/kv/namespaces/${encodeURIComponent(namespaceId)}/values/${encodeURIComponent(keyName)}`,
@@ -1764,10 +1785,7 @@ class ValuesResource extends APIResource {
 					expiration_ttl,
 				},
 				body,
-				headers: {
-					...options?.headers,
-					...resolveKVValueHeaders(body),
-				},
+				headers,
 			},
 		);
 	}
@@ -2098,10 +2116,19 @@ async function requestClient<Result>(
 			return response as Result;
 		default: {
 			const rawBody = await response.text();
-			const body = rawBody ? safeParseJSON(rawBody) : null;
-			if (isEnvelope(body)) {
-				if (body.success === false) throw await createError(response, body);
-				return (options.unwrapResult === false ? body : (body.result ?? null)) as Result;
+			let body: unknown = null;
+			if (rawBody) {
+				try {
+					body = JSON.parse(rawBody);
+				} catch (error) {
+					body = rawBody;
+				}
+			}
+			// V4 APIs usually return envelopes: { success, result, errors, ... }.
+			if (typeof body === "object" && body !== null && ("success" in body || "result" in body || "errors" in body)) {
+				const envelope = body as CloudflareEnvelope;
+				if (envelope.success === false) throw await createError(response, envelope);
+				return (options.unwrapResult === false ? envelope : (envelope.result ?? null)) as Result;
 			}
 			return body as Result;
 		}
@@ -2122,7 +2149,24 @@ async function fetchResponse(
 		...createAuthHeaders(client),
 		...options.headers,
 	};
-	const body = normalizeBody(options.body, headers);
+	let body = options.body;
+	if (body === undefined || body === null) {
+		body = undefined;
+	} else if (typeof FormData !== "undefined" && body instanceof FormData) {
+		// Let runtime set multipart boundary automatically.
+		for (const key of Object.keys(headers)) {
+			if (key.toLowerCase() === "content-type") delete headers[key];
+		}
+	} else if (
+		!(body instanceof ArrayBuffer) &&
+		!ArrayBuffer.isView(body) &&
+		typeof body !== "string" &&
+		Object.prototype.toString.call(body) === "[object Object]"
+	) {
+		const hasContentType = Object.keys(headers).some(key => key.toLowerCase() === "content-type");
+		if (!hasContentType) headers["Content-Type"] = "application/json";
+		body = JSON.stringify(body);
+	}
 	const fetcher = options.fetch ?? client.fetch ?? utilFetch;
 	const timeout = options.timeout ?? client.timeout;
 	const maxRetries = options.maxRetries ?? client.maxRetries;
@@ -2134,20 +2178,21 @@ async function fetchResponse(
 				headers,
 				body: body as FetchRequest["body"],
 				timeout,
-			});
-			const response = await normalizeResponse(rawResponse, url.toString());
-			if (attempt < maxRetries && shouldRetry(response.status)) {
-				await delay(backoffDelay(attempt));
+				});
+				const response = await normalizeResponse(rawResponse, url.toString());
+				if (attempt < maxRetries && (RETRYABLE_STATUS_CODES.has(response.status) || response.status >= 500)) {
+					// Reuse current backoff policy inline to avoid helper indirection.
+					await new Promise(resolve => setTimeout(resolve, 200 * 2 ** attempt));
+					attempt += 1;
+					continue;
+				}
+				return response;
+			} catch (error) {
+				if (attempt >= maxRetries) throw error;
+				await new Promise(resolve => setTimeout(resolve, 200 * 2 ** attempt));
 				attempt += 1;
-				continue;
 			}
-			return response;
-		} catch (error) {
-			if (attempt >= maxRetries) throw error;
-			await delay(backoffDelay(attempt));
-			attempt += 1;
 		}
-	}
 }
 
 function createURL(client: Cloudflare, path: string, query: QueryLike = {}): URL {
@@ -2195,8 +2240,23 @@ function createAuthHeaders(client: Cloudflare): HeadersLike {
 }
 
 async function createError(response: CloudflareResponse, body?: unknown): Promise<CloudflareAPIError> {
-	const payload = body ?? safeParseJSON(await response.text());
-	const envelope = isEnvelope(payload) ? payload : null;
+	let payload = body;
+	if (payload === undefined) {
+		const rawBody = await response.text();
+		if (rawBody) {
+			try {
+				payload = JSON.parse(rawBody);
+			} catch (error) {
+				payload = rawBody;
+			}
+		} else {
+			payload = null;
+		}
+	}
+	const envelope =
+		typeof payload === "object" && payload !== null && ("success" in payload || "result" in payload || "errors" in payload)
+			? (payload as CloudflareEnvelope)
+			: null;
 	const message =
 		envelope?.errors?.find(item => Boolean(item?.message))?.message ??
 		envelope?.messages?.find(item => Boolean(item?.message))?.message ??
@@ -2218,111 +2278,6 @@ function readEnv(name: string): string | null {
 	return runtime.process?.env?.[name] ?? null;
 }
 
-function normalizeOptionalQuery<Query extends object>(
-	queryOrOptions?: Query | RequestOptions,
-	options?: RequestOptions,
-): {
-	query: QueryLike;
-	requestOptions: RequestOptions | undefined;
-} {
-	switch (true) {
-		case isRequestOptions(queryOrOptions):
-			return {
-				query: {},
-				requestOptions: queryOrOptions,
-			};
-		default:
-			return {
-				query: { ...((queryOrOptions as Query | undefined) ?? {}) } as QueryLike,
-				requestOptions: options,
-			};
-	}
-}
-
-function isRequestOptions(value: unknown): value is RequestOptions {
-	return typeof value === "object" && value !== null && ["headers", "query", "timeout", "maxRetries", "fetch"].some(key => key in value);
-}
-
-function isEnvelope(value: unknown): value is CloudflareEnvelope {
-	return typeof value === "object" && value !== null && ("success" in value || "result" in value || "errors" in value);
-}
-
-function normalizeHeadersInit(headers?: HeadersInit | HeadersLike): HeadersInit | undefined {
-	if (!headers) return undefined;
-	if (headers instanceof Headers) return headers;
-	if (Array.isArray(headers)) return headers;
-	if (typeof (headers as { forEach?: unknown }).forEach === "function") {
-		const iterableHeaders = headers as unknown as {
-			forEach(callback: (value: string, key: string) => void): void;
-		};
-		const normalized: Array<[string, string]> = [];
-		iterableHeaders.forEach((value, key) => normalized.push([key, value]));
-		return normalized;
-	}
-	return Object.entries(headers).flatMap(([key, value]) => {
-		if (value === undefined || value === null) return [];
-		return [[key, String(value)]];
-	});
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-	return Object.prototype.toString.call(value) === "[object Object]";
-}
-
-function normalizeBody(body: unknown, headers: HeadersLike): unknown {
-	if (body === undefined || body === null) return undefined;
-	if (typeof FormData !== "undefined" && body instanceof FormData) {
-		deleteHeader(headers, "Content-Type");
-		return body;
-	}
-	if (body instanceof ArrayBuffer || ArrayBuffer.isView(body) || typeof body === "string") return body;
-	if (isPlainObject(body)) {
-		if (!hasHeader(headers, "Content-Type")) headers["Content-Type"] = "application/json";
-		return JSON.stringify(body);
-	}
-	return body;
-}
-
-function hasHeader(headers: HeadersLike, keyName: string): boolean {
-	const headerName = keyName.toLowerCase();
-	return Object.keys(headers).some(key => key.toLowerCase() === headerName);
-}
-
-function deleteHeader(headers: HeadersLike, keyName: string): void {
-	const headerName = keyName.toLowerCase();
-	for (const key of Object.keys(headers)) {
-		if (key.toLowerCase() === headerName) delete headers[key];
-	}
-}
-
-function createKVValueBody(value: string, metadata: unknown): string | FormData {
-	switch (metadata === undefined) {
-		case true:
-			return value;
-		default: {
-			const formData = new FormData();
-			formData.append("value", value);
-			formData.append("metadata", JSON.stringify(metadata));
-			return formData;
-		}
-	}
-}
-
-function createRecordImportBody(file: string | Blob, proxied?: string): FormData {
-	const formData = new FormData();
-	formData.append("file", file);
-	if (proxied !== undefined) formData.append("proxied", proxied);
-	return formData;
-}
-
-function resolveKVValueHeaders(body: string | FormData): HeadersLike {
-	return body instanceof FormData
-		? {}
-		: {
-				"Content-Type": "text/plain;charset=UTF-8",
-		  };
-}
-
 async function normalizeResponse(rawResponse: FetchResponse | Response | CloudflareResponse, url = ""): Promise<CloudflareResponse> {
 	if (rawResponse instanceof CloudflareResponse) return rawResponse;
 	if (typeof (rawResponse as Response).arrayBuffer === "function") {
@@ -2342,24 +2297,4 @@ async function normalizeResponse(rawResponse: FetchResponse | Response | Cloudfl
 		headers: response.headers as HeadersLike | undefined,
 		url,
 	});
-}
-
-function safeParseJSON(value: string): unknown {
-	try {
-		return JSON.parse(value);
-	} catch (error) {
-		return value;
-	}
-}
-
-function shouldRetry(status: number): boolean {
-	return RETRYABLE_STATUS_CODES.has(status) || status >= 500;
-}
-
-function backoffDelay(attempt: number): number {
-	return 200 * 2 ** attempt;
-}
-
-function delay(milliseconds: number): Promise<void> {
-	return new Promise(resolve => setTimeout(resolve, milliseconds));
 }

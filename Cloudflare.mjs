@@ -25,7 +25,7 @@ export class CloudflareResponse {
         this.#body = typeof body === "string" ? body : body.slice(0);
         this.status = init.status ?? 200;
         this.statusText = init.statusText ?? "";
-        this.headers = new Headers(normalizeHeadersInit(init.headers));
+        this.headers = new Headers(init.headers);
         this.url = init.url ?? "";
         this.ok = this.status >= 200 && this.status < 300;
     }
@@ -286,7 +286,12 @@ class ZonesResource extends APIResource {
      * @returns {PagePromise<ZonesV4PagePaginationArray, Zone>}
      */
     list(queryOrOptions, options) {
-        const { query, requestOptions } = normalizeOptionalQuery(queryOrOptions, options);
+        // Keep the existing "query or options" call style without relying on extra helpers.
+        const isOptions = typeof queryOrOptions === "object" &&
+            queryOrOptions !== null &&
+            ["headers", "query", "timeout", "maxRetries", "fetch"].some(key => key in queryOrOptions);
+        const query = isOptions ? {} : { ...(queryOrOptions ?? {}) };
+        const requestOptions = isOptions ? queryOrOptions : options;
         return getAPIList(this._client, "/zones", ZonesV4PagePaginationArray, query, requestOptions);
     }
     /**
@@ -438,9 +443,13 @@ class DNSRecordsResource extends APIResource {
      */
     import(params, options) {
         const { zone_id, file, proxied } = params;
+        const formData = new FormData();
+        formData.append("file", file);
+        if (proxied !== undefined)
+            formData.append("proxied", proxied);
         return postResult(this._client, `/zones/${encodeURIComponent(zone_id)}/dns_records/import`, {
             ...options,
-            body: createRecordImportBody(file, proxied),
+            body: formData,
         });
     }
     /**
@@ -726,7 +735,19 @@ class ValuesResource extends APIResource {
      */
     update(namespaceId, keyName, params, options) {
         const { account_id, expiration, expiration_ttl, value, metadata } = params;
-        const body = createKVValueBody(value, metadata);
+        let body = value;
+        let headers = {
+            ...options?.headers,
+            "Content-Type": "text/plain;charset=UTF-8",
+        };
+        // Cloudflare KV uses multipart when metadata is present.
+        if (metadata !== undefined) {
+            const formData = new FormData();
+            formData.append("value", value);
+            formData.append("metadata", JSON.stringify(metadata));
+            body = formData;
+            headers = { ...options?.headers };
+        }
         return putResult(this._client, `/accounts/${encodeURIComponent(account_id)}/storage/kv/namespaces/${encodeURIComponent(namespaceId)}/values/${encodeURIComponent(keyName)}`, {
             ...options,
             query: {
@@ -734,10 +755,7 @@ class ValuesResource extends APIResource {
                 expiration_ttl,
             },
             body,
-            headers: {
-                ...options?.headers,
-                ...resolveKVValueHeaders(body),
-            },
+            headers,
         });
     }
     /**
@@ -924,11 +942,21 @@ async function requestClient(client, method, path, options = {}) {
             return response;
         default: {
             const rawBody = await response.text();
-            const body = rawBody ? safeParseJSON(rawBody) : null;
-            if (isEnvelope(body)) {
-                if (body.success === false)
-                    throw await createError(response, body);
-                return (options.unwrapResult === false ? body : (body.result ?? null));
+            let body = null;
+            if (rawBody) {
+                try {
+                    body = JSON.parse(rawBody);
+                }
+                catch (error) {
+                    body = rawBody;
+                }
+            }
+            // V4 APIs usually return envelopes: { success, result, errors, ... }.
+            if (typeof body === "object" && body !== null && ("success" in body || "result" in body || "errors" in body)) {
+                const envelope = body;
+                if (envelope.success === false)
+                    throw await createError(response, envelope);
+                return (options.unwrapResult === false ? envelope : (envelope.result ?? null));
             }
             return body;
         }
@@ -941,7 +969,26 @@ async function fetchResponse(client, method, path, options) {
         ...createAuthHeaders(client),
         ...options.headers,
     };
-    const body = normalizeBody(options.body, headers);
+    let body = options.body;
+    if (body === undefined || body === null) {
+        body = undefined;
+    }
+    else if (typeof FormData !== "undefined" && body instanceof FormData) {
+        // Let runtime set multipart boundary automatically.
+        for (const key of Object.keys(headers)) {
+            if (key.toLowerCase() === "content-type")
+                delete headers[key];
+        }
+    }
+    else if (!(body instanceof ArrayBuffer) &&
+        !ArrayBuffer.isView(body) &&
+        typeof body !== "string" &&
+        Object.prototype.toString.call(body) === "[object Object]") {
+        const hasContentType = Object.keys(headers).some(key => key.toLowerCase() === "content-type");
+        if (!hasContentType)
+            headers["Content-Type"] = "application/json";
+        body = JSON.stringify(body);
+    }
     const fetcher = options.fetch ?? client.fetch ?? utilFetch;
     const timeout = options.timeout ?? client.timeout;
     const maxRetries = options.maxRetries ?? client.maxRetries;
@@ -955,8 +1002,9 @@ async function fetchResponse(client, method, path, options) {
                 timeout,
             });
             const response = await normalizeResponse(rawResponse, url.toString());
-            if (attempt < maxRetries && shouldRetry(response.status)) {
-                await delay(backoffDelay(attempt));
+            if (attempt < maxRetries && (RETRYABLE_STATUS_CODES.has(response.status) || response.status >= 500)) {
+                // Reuse current backoff policy inline to avoid helper indirection.
+                await new Promise(resolve => setTimeout(resolve, 200 * 2 ** attempt));
                 attempt += 1;
                 continue;
             }
@@ -965,7 +1013,7 @@ async function fetchResponse(client, method, path, options) {
         catch (error) {
             if (attempt >= maxRetries)
                 throw error;
-            await delay(backoffDelay(attempt));
+            await new Promise(resolve => setTimeout(resolve, 200 * 2 ** attempt));
             attempt += 1;
         }
     }
@@ -1015,8 +1063,24 @@ function createAuthHeaders(client) {
     return {};
 }
 async function createError(response, body) {
-    const payload = body ?? safeParseJSON(await response.text());
-    const envelope = isEnvelope(payload) ? payload : null;
+    let payload = body;
+    if (payload === undefined) {
+        const rawBody = await response.text();
+        if (rawBody) {
+            try {
+                payload = JSON.parse(rawBody);
+            }
+            catch (error) {
+                payload = rawBody;
+            }
+        }
+        else {
+            payload = null;
+        }
+    }
+    const envelope = typeof payload === "object" && payload !== null && ("success" in payload || "result" in payload || "errors" in payload)
+        ? payload
+        : null;
     const message = envelope?.errors?.find(item => Boolean(item?.message))?.message ??
         envelope?.messages?.find(item => Boolean(item?.message))?.message ??
         response.statusText ??
@@ -1030,101 +1094,6 @@ async function createError(response, body) {
 function readEnv(name) {
     const runtime = globalThis;
     return runtime.process?.env?.[name] ?? null;
-}
-function normalizeOptionalQuery(queryOrOptions, options) {
-    switch (true) {
-        case isRequestOptions(queryOrOptions):
-            return {
-                query: {},
-                requestOptions: queryOrOptions,
-            };
-        default:
-            return {
-                query: { ...(queryOrOptions ?? {}) },
-                requestOptions: options,
-            };
-    }
-}
-function isRequestOptions(value) {
-    return typeof value === "object" && value !== null && ["headers", "query", "timeout", "maxRetries", "fetch"].some(key => key in value);
-}
-function isEnvelope(value) {
-    return typeof value === "object" && value !== null && ("success" in value || "result" in value || "errors" in value);
-}
-function normalizeHeadersInit(headers) {
-    if (!headers)
-        return undefined;
-    if (headers instanceof Headers)
-        return headers;
-    if (Array.isArray(headers))
-        return headers;
-    if (typeof headers.forEach === "function") {
-        const iterableHeaders = headers;
-        const normalized = [];
-        iterableHeaders.forEach((value, key) => normalized.push([key, value]));
-        return normalized;
-    }
-    return Object.entries(headers).flatMap(([key, value]) => {
-        if (value === undefined || value === null)
-            return [];
-        return [[key, String(value)]];
-    });
-}
-function isPlainObject(value) {
-    return Object.prototype.toString.call(value) === "[object Object]";
-}
-function normalizeBody(body, headers) {
-    if (body === undefined || body === null)
-        return undefined;
-    if (typeof FormData !== "undefined" && body instanceof FormData) {
-        deleteHeader(headers, "Content-Type");
-        return body;
-    }
-    if (body instanceof ArrayBuffer || ArrayBuffer.isView(body) || typeof body === "string")
-        return body;
-    if (isPlainObject(body)) {
-        if (!hasHeader(headers, "Content-Type"))
-            headers["Content-Type"] = "application/json";
-        return JSON.stringify(body);
-    }
-    return body;
-}
-function hasHeader(headers, keyName) {
-    const headerName = keyName.toLowerCase();
-    return Object.keys(headers).some(key => key.toLowerCase() === headerName);
-}
-function deleteHeader(headers, keyName) {
-    const headerName = keyName.toLowerCase();
-    for (const key of Object.keys(headers)) {
-        if (key.toLowerCase() === headerName)
-            delete headers[key];
-    }
-}
-function createKVValueBody(value, metadata) {
-    switch (metadata === undefined) {
-        case true:
-            return value;
-        default: {
-            const formData = new FormData();
-            formData.append("value", value);
-            formData.append("metadata", JSON.stringify(metadata));
-            return formData;
-        }
-    }
-}
-function createRecordImportBody(file, proxied) {
-    const formData = new FormData();
-    formData.append("file", file);
-    if (proxied !== undefined)
-        formData.append("proxied", proxied);
-    return formData;
-}
-function resolveKVValueHeaders(body) {
-    return body instanceof FormData
-        ? {}
-        : {
-            "Content-Type": "text/plain;charset=UTF-8",
-        };
 }
 async function normalizeResponse(rawResponse, url = "") {
     if (rawResponse instanceof CloudflareResponse)
@@ -1146,21 +1115,4 @@ async function normalizeResponse(rawResponse, url = "") {
         headers: response.headers,
         url,
     });
-}
-function safeParseJSON(value) {
-    try {
-        return JSON.parse(value);
-    }
-    catch (error) {
-        return value;
-    }
-}
-function shouldRetry(status) {
-    return RETRYABLE_STATUS_CODES.has(status) || status >= 500;
-}
-function backoffDelay(attempt) {
-    return 200 * 2 ** attempt;
-}
-function delay(milliseconds) {
-    return new Promise(resolve => setTimeout(resolve, milliseconds));
 }
