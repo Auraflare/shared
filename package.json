@@ -1,26 +1,60 @@
 {
 	"name": "@auraflare/shared",
-	"description": "Shared Library",
+	"description": "Shared Cloudflare and KV library",
+	"author": "VirgilClyne <Virgil@nanocat.me>",
+	"homepage": "https://github.com/Auraflare/shared#readme",
+	"keywords": [
+		"cloudflare",
+		"kv"
+	],
+	"license": "Apache-2.0",
+	"bugs": {
+		"url": "https://github.com/Auraflare/shared/issues"
+	},
 	"main": "index.mjs",
 	"types": "index.d.ts",
 	"type": "module",
+	"exports": {
+		".": {
+			"types": "./index.d.ts",
+			"import": "./index.mjs",
+			"default": "./index.mjs"
+		},
+		"./Cloudflare": {
+			"types": "./Cloudflare.d.ts",
+			"import": "./Cloudflare.mjs",
+			"default": "./Cloudflare.mjs"
+		},
+		"./KV": {
+			"types": "./KV.d.ts",
+			"import": "./KV.mjs",
+			"default": "./KV.mjs"
+		},
+		"./package.json": "./package.json"
+	},
 	"scripts": {
-		"test": "test"
+		"test": "node --test test/*.js"
 	},
 	"repository": {
 		"type": "git",
 		"url": "git+https://github.com/Auraflare/shared.git"
 	},
-	"keywords": [
-		"Cloudflare"
+	"files": [
+		"index.d.ts",
+		"index.mjs",
+		"index.mts",
+		"Cloudflare.d.ts",
+		"Cloudflare.mjs",
+		"Cloudflare.mts",
+		"KV.d.ts",
+		"KV.mjs",
+		"KV.mts"
 	],
-	"author": "VirgilClyne",
-	"license": "Apache-2.0",
-	"bugs": {
-		"url": "https://github.com/Auraflare/shared/issues"
-	},
-	"homepage": "https://github.com/Auraflare/shared#readme",
 	"dependencies": {
 		"@nsnanocat/util": "^2.4.1"
+	},
+	"publishConfig": {
+		"registry": "https://registry.npmjs.org/",
+		"access": "public"
 	}
 }
