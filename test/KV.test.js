@@ -100,13 +100,13 @@ describe("KV", () => {
 		assert.strictEqual(calls[0].method, "PUT");
 		assert.strictEqual(
 			calls[0].url,
-			"https://api.cloudflare.com/accounts/account-id/storage/kv/namespaces/namespace-id/values/plain",
+			"https://api.cloudflare.com/client/v4/accounts/account-id/storage/kv/namespaces/namespace-id/values/plain",
 		);
 		assert.strictEqual(calls[1].method, "GET");
 		assert.strictEqual(calls[2].method, "DELETE");
 		assert.strictEqual(
 			calls[3].url,
-			"https://api.cloudflare.com/accounts/account-id/storage/kv/namespaces/namespace-id/keys?prefix=pl&limit=5&cursor=next",
+			"https://api.cloudflare.com/client/v4/accounts/account-id/storage/kv/namespaces/namespace-id/keys?prefix=pl&limit=5&cursor=next",
 		);
 	});
 

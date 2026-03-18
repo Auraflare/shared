@@ -883,20 +883,23 @@ class ValuesResource extends APIResource {
 	): Promise<null> {
 		const { account_id, expiration, expiration_ttl, value, metadata } = params;
 		const body = createKVValueBody(value, metadata);
-		return putResult<null>(
-			this._client,
-			`/accounts/${encodeURIComponent(account_id)}/storage/kv/namespaces/${encodeURIComponent(namespaceId)}/values/${encodeURIComponent(keyName)}`,
-			{
+			return putResult<null>(
+				this._client,
+				`/accounts/${encodeURIComponent(account_id)}/storage/kv/namespaces/${encodeURIComponent(namespaceId)}/values/${encodeURIComponent(keyName)}`,
+				{
 				...options,
 				query: {
 					expiration,
 					expiration_ttl,
+					},
+					body,
+					headers: {
+						...options?.headers,
+						...resolveKVValueHeaders(body),
+					},
 				},
-				body,
-				headers: mergeHeaders(options?.headers, resolveKVValueHeaders(body)),
-			},
-		);
-	}
+			);
+		}
 
 	/**
 	 * 读取 KV 值。
@@ -914,17 +917,18 @@ class ValuesResource extends APIResource {
 		params: ValueGetParams,
 		options?: RequestOptions,
 	): Promise<CloudflareResponse> {
-		return getBinaryResponse(
-			this._client,
-			`/accounts/${encodeURIComponent(params.account_id)}/storage/kv/namespaces/${encodeURIComponent(namespaceId)}/values/${encodeURIComponent(keyName)}`,
-			{
-				...options,
-				headers: mergeHeaders(options?.headers, {
-					Accept: "application/octet-stream",
-				}),
-			},
-		);
-	}
+			return getBinaryResponse(
+				this._client,
+				`/accounts/${encodeURIComponent(params.account_id)}/storage/kv/namespaces/${encodeURIComponent(namespaceId)}/values/${encodeURIComponent(keyName)}`,
+				{
+					...options,
+					headers: {
+						...options?.headers,
+						Accept: "application/octet-stream",
+					},
+				},
+			);
+		}
 
 	/**
 	 * 删除 KV 值。
@@ -999,7 +1003,8 @@ export class Cloudflare {
 		this.apiKey = options.apiKey ?? readEnv("CLOUDFLARE_API_KEY");
 		this.apiEmail = options.apiEmail ?? readEnv("CLOUDFLARE_EMAIL");
 		this.userServiceKey = options.userServiceKey ?? readEnv("CLOUDFLARE_API_USER_SERVICE_KEY");
-		this.baseURL = options.baseURL ?? readEnv("CLOUDFLARE_BASE_URL") ?? DEFAULT_BASE_URL;
+		const baseURL = options.baseURL ?? readEnv("CLOUDFLARE_BASE_URL") ?? DEFAULT_BASE_URL;
+		this.baseURL = baseURL.replace(/\/+$/, "");
 		this.apiVersion = options.apiVersion ?? null;
 		this.timeout = options.timeout ?? DEFAULT_TIMEOUT;
 		this.httpAgent = options.httpAgent;
@@ -1165,7 +1170,11 @@ async function fetchResponse(
 	},
 ): Promise<CloudflareResponse> {
 	const url = createURL(client, path, options.query);
-	const headers = mergeHeaders(client.defaultHeaders, createAuthHeaders(client), options.headers);
+	const headers = {
+		...client.defaultHeaders,
+		...createAuthHeaders(client),
+		...options.headers,
+	};
 	const body = normalizeBody(options.body, headers);
 	const fetcher = options.fetch ?? client.fetch ?? utilFetch;
 	const timeout = options.timeout ?? client.timeout;
@@ -1195,8 +1204,26 @@ async function fetchResponse(
 }
 
 function createURL(client: Cloudflare, path: string, query: QueryLike = {}): URL {
-	const url = new URL(path, ensureBaseURL(client.baseURL));
-	appendQuery(url.searchParams, mergeQuery(client.defaultQuery, query));
+	const url = new URL(`${client.baseURL}${path}`);
+	for (const [key, value] of Object.entries({ ...client.defaultQuery, ...query })) {
+		if (value === undefined) {
+			url.searchParams.delete(key);
+			continue;
+		}
+		if (value === null) continue;
+		switch (true) {
+			case Array.isArray(value):
+				url.searchParams.delete(key);
+				for (const item of value) {
+					if (item === undefined || item === null) continue;
+					url.searchParams.append(key, typeof item === "object" ? JSON.stringify(item) : String(item));
+				}
+				break;
+			default:
+				url.searchParams.set(key, typeof value === "object" ? JSON.stringify(value) : String(value));
+				break;
+		}
+	}
 	return url;
 }
 
@@ -1273,54 +1300,6 @@ function isEnvelope(value: unknown): value is CloudflareEnvelope {
 	return typeof value === "object" && value !== null && ("success" in value || "result" in value || "errors" in value);
 }
 
-function mergeHeaders(...headersList: Array<HeadersLike | undefined>): HeadersLike {
-	const headers: HeadersLike = {};
-	for (const item of headersList) {
-		if (!item) continue;
-		for (const [key, value] of Object.entries(item)) {
-			if (value === undefined || value === null) {
-				delete headers[key];
-				continue;
-			}
-			headers[key] = value;
-		}
-	}
-	return headers;
-}
-
-function mergeQuery(...queryList: Array<QueryLike | undefined>): QueryLike {
-	const query: QueryLike = {};
-	for (const item of queryList) {
-		if (!item) continue;
-		for (const [key, value] of Object.entries(item)) {
-			if (value === undefined) {
-				delete query[key];
-				continue;
-			}
-			query[key] = value;
-		}
-	}
-	return query;
-}
-
-function appendQuery(searchParams: URLSearchParams, query: QueryLike, prefix?: string): void {
-	for (const [key, value] of Object.entries(query)) {
-		if (value === undefined || value === null) continue;
-		const queryKey = prefix ? `${prefix}.${key}` : key;
-		switch (true) {
-			case Array.isArray(value):
-				for (const item of value) appendQuery(searchParams, { [queryKey]: item });
-				break;
-			case isPlainObject(value):
-				appendQuery(searchParams, value as QueryLike, queryKey);
-				break;
-			default:
-				searchParams.append(queryKey, String(value));
-				break;
-		}
-	}
-}
-
 function normalizeHeadersInit(headers?: HeadersInit | HeadersLike): HeadersInit | undefined {
 	if (!headers) return undefined;
 	if (headers instanceof Headers) return headers;
@@ -1337,10 +1316,6 @@ function normalizeHeadersInit(headers?: HeadersInit | HeadersLike): HeadersInit 
 		if (value === undefined || value === null) return [];
 		return [[key, String(value)]];
 	});
-}
-
-function ensureBaseURL(baseURL: string): string {
-	return baseURL.endsWith("/") ? baseURL : `${baseURL}/`;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

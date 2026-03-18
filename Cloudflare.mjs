@@ -426,7 +426,10 @@ class ValuesResource extends APIResource {
                 expiration_ttl,
             },
             body,
-            headers: mergeHeaders(options?.headers, resolveKVValueHeaders(body)),
+            headers: {
+                ...options?.headers,
+                ...resolveKVValueHeaders(body),
+            },
         });
     }
     /**
@@ -442,9 +445,10 @@ class ValuesResource extends APIResource {
     get(namespaceId, keyName, params, options) {
         return getBinaryResponse(this._client, `/accounts/${encodeURIComponent(params.account_id)}/storage/kv/namespaces/${encodeURIComponent(namespaceId)}/values/${encodeURIComponent(keyName)}`, {
             ...options,
-            headers: mergeHeaders(options?.headers, {
+            headers: {
+                ...options?.headers,
                 Accept: "application/octet-stream",
-            }),
+            },
         });
     }
     /**
@@ -508,7 +512,8 @@ export class Cloudflare {
         this.apiKey = options.apiKey ?? readEnv("CLOUDFLARE_API_KEY");
         this.apiEmail = options.apiEmail ?? readEnv("CLOUDFLARE_EMAIL");
         this.userServiceKey = options.userServiceKey ?? readEnv("CLOUDFLARE_API_USER_SERVICE_KEY");
-        this.baseURL = options.baseURL ?? readEnv("CLOUDFLARE_BASE_URL") ?? DEFAULT_BASE_URL;
+        const baseURL = options.baseURL ?? readEnv("CLOUDFLARE_BASE_URL") ?? DEFAULT_BASE_URL;
+        this.baseURL = baseURL.replace(/\/+$/, "");
         this.apiVersion = options.apiVersion ?? null;
         this.timeout = options.timeout ?? DEFAULT_TIMEOUT;
         this.httpAgent = options.httpAgent;
@@ -620,7 +625,11 @@ async function requestClient(client, method, path, options = {}) {
 }
 async function fetchResponse(client, method, path, options) {
     const url = createURL(client, path, options.query);
-    const headers = mergeHeaders(client.defaultHeaders, createAuthHeaders(client), options.headers);
+    const headers = {
+        ...client.defaultHeaders,
+        ...createAuthHeaders(client),
+        ...options.headers,
+    };
     const body = normalizeBody(options.body, headers);
     const fetcher = options.fetch ?? client.fetch ?? utilFetch;
     const timeout = options.timeout ?? client.timeout;
@@ -651,8 +660,28 @@ async function fetchResponse(client, method, path, options) {
     }
 }
 function createURL(client, path, query = {}) {
-    const url = new URL(path, ensureBaseURL(client.baseURL));
-    appendQuery(url.searchParams, mergeQuery(client.defaultQuery, query));
+    const url = new URL(`${client.baseURL}${path}`);
+    for (const [key, value] of Object.entries({ ...client.defaultQuery, ...query })) {
+        if (value === undefined) {
+            url.searchParams.delete(key);
+            continue;
+        }
+        if (value === null)
+            continue;
+        switch (true) {
+            case Array.isArray(value):
+                url.searchParams.delete(key);
+                for (const item of value) {
+                    if (item === undefined || item === null)
+                        continue;
+                    url.searchParams.append(key, typeof item === "object" ? JSON.stringify(item) : String(item));
+                }
+                break;
+            default:
+                url.searchParams.set(key, typeof value === "object" ? JSON.stringify(value) : String(value));
+                break;
+        }
+    }
     return url;
 }
 function createAuthHeaders(client) {
@@ -711,55 +740,6 @@ function isRequestOptions(value) {
 function isEnvelope(value) {
     return typeof value === "object" && value !== null && ("success" in value || "result" in value || "errors" in value);
 }
-function mergeHeaders(...headersList) {
-    const headers = {};
-    for (const item of headersList) {
-        if (!item)
-            continue;
-        for (const [key, value] of Object.entries(item)) {
-            if (value === undefined || value === null) {
-                delete headers[key];
-                continue;
-            }
-            headers[key] = value;
-        }
-    }
-    return headers;
-}
-function mergeQuery(...queryList) {
-    const query = {};
-    for (const item of queryList) {
-        if (!item)
-            continue;
-        for (const [key, value] of Object.entries(item)) {
-            if (value === undefined) {
-                delete query[key];
-                continue;
-            }
-            query[key] = value;
-        }
-    }
-    return query;
-}
-function appendQuery(searchParams, query, prefix) {
-    for (const [key, value] of Object.entries(query)) {
-        if (value === undefined || value === null)
-            continue;
-        const queryKey = prefix ? `${prefix}.${key}` : key;
-        switch (true) {
-            case Array.isArray(value):
-                for (const item of value)
-                    appendQuery(searchParams, { [queryKey]: item });
-                break;
-            case isPlainObject(value):
-                appendQuery(searchParams, value, queryKey);
-                break;
-            default:
-                searchParams.append(queryKey, String(value));
-                break;
-        }
-    }
-}
 function normalizeHeadersInit(headers) {
     if (!headers)
         return undefined;
@@ -778,9 +758,6 @@ function normalizeHeadersInit(headers) {
             return [];
         return [[key, String(value)]];
     });
-}
-function ensureBaseURL(baseURL) {
-    return baseURL.endsWith("/") ? baseURL : `${baseURL}/`;
 }
 function isPlainObject(value) {
     return Object.prototype.toString.call(value) === "[object Object]";

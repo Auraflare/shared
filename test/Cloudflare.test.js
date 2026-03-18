@@ -115,7 +115,7 @@ describe("Cloudflare smoke", () => {
 		assert.strictEqual(calls[2].method, "DELETE");
 		assert.strictEqual(
 			calls[0].url,
-			"https://api.cloudflare.com/accounts/account-id/storage/kv/namespaces/namespace-id/values/key-1",
+			"https://api.cloudflare.com/client/v4/accounts/account-id/storage/kv/namespaces/namespace-id/values/key-1",
 		);
 		assert.strictEqual(calls[0].options.headers["Content-Type"], "text/plain;charset=UTF-8");
 	});
