@@ -171,6 +171,14 @@ class CursorPaginationAfter extends AbstractPage {
     }
 }
 /**
+ * 单页结果。
+ * Single page result.
+ *
+ * @template TItem 条目类型 / Item type.
+ */
+class SinglePage extends AbstractPage {
+}
+/**
  * 分页 Promise。
  * Pagination promise.
  *
@@ -206,6 +214,12 @@ class ZonesV4PagePaginationArray extends V4PagePaginationArray {
  * DNS record pagination result.
  */
 class RecordResponsesV4PagePaginationArray extends V4PagePaginationArray {
+}
+/**
+ * DNS 记录单页结果。
+ * DNS record single page result.
+ */
+class RecordResponsesSinglePage extends SinglePage {
 }
 /**
  * Namespace 分页结果。
@@ -315,30 +329,6 @@ class DNSRecordsResource extends APIResource {
         });
     }
     /**
-     * 获取 DNS 记录。
-     * Get a DNS record.
-     *
-     * @param {string} dnsRecordId 记录 ID / Record ID.
-     * @param {RecordGetParams} params 路径参数 / Path params.
-     * @param {RequestOptions} [options] 请求选项 / Request options.
-     * @returns {Promise<RecordResponse>}
-     */
-    get(dnsRecordId, params, options) {
-        return getResult(this._client, `/zones/${encodeURIComponent(params.zone_id)}/dns_records/${encodeURIComponent(dnsRecordId)}`, options);
-    }
-    /**
-     * 列出 DNS 记录。
-     * List DNS records.
-     *
-     * @param {RecordListParams} params 查询参数 / Query params.
-     * @param {RequestOptions} [options] 请求选项 / Request options.
-     * @returns {PagePromise<RecordResponsesV4PagePaginationArray, RecordResponse>}
-     */
-    list(params, options) {
-        const { zone_id, ...query } = params;
-        return getAPIList(this._client, `/zones/${encodeURIComponent(zone_id)}/dns_records`, RecordResponsesV4PagePaginationArray, query, options);
-    }
-    /**
      * 覆盖更新 DNS 记录。
      * Overwrite a DNS record.
      *
@@ -354,6 +344,157 @@ class DNSRecordsResource extends APIResource {
             body,
         });
     }
+    /**
+     * 列出 DNS 记录。
+     * List DNS records.
+     *
+     * @param {RecordListParams} params 查询参数 / Query params.
+     * @param {RequestOptions} [options] 请求选项 / Request options.
+     * @returns {PagePromise<RecordResponsesV4PagePaginationArray, RecordResponse>}
+     */
+    list(params, options) {
+        const { zone_id, ...query } = params;
+        return getAPIList(this._client, `/zones/${encodeURIComponent(zone_id)}/dns_records`, RecordResponsesV4PagePaginationArray, query, options);
+    }
+    /**
+     * 删除 DNS 记录。
+     * Delete a DNS record.
+     *
+     * @param {string} dnsRecordId 记录 ID / Record ID.
+     * @param {RecordDeleteParams} params 路径参数 / Path params.
+     * @param {RequestOptions} [options] 请求选项 / Request options.
+     * @returns {Promise<RecordDeleteResponse>}
+     */
+    delete(dnsRecordId, params, options) {
+        return deleteResult(this._client, `/zones/${encodeURIComponent(params.zone_id)}/dns_records/${encodeURIComponent(dnsRecordId)}`, options);
+    }
+    /**
+     * 批量执行 DNS 记录操作。
+     * Execute DNS record operations in batch.
+     *
+     * @param {RecordBatchParams} params 请求参数 / Request params.
+     * @param {RequestOptions} [options] 请求选项 / Request options.
+     * @returns {Promise<RecordBatchResponse>}
+     */
+    batch(params, options) {
+        const { zone_id, ...body } = params;
+        return postResult(this._client, `/zones/${encodeURIComponent(zone_id)}/dns_records/batch`, {
+            ...options,
+            body,
+        });
+    }
+    /**
+     * 增量更新 DNS 记录。
+     * Patch a DNS record.
+     *
+     * @param {string} dnsRecordId 记录 ID / Record ID.
+     * @param {RecordEditParams} params 请求参数 / Request params.
+     * @param {RequestOptions} [options] 请求选项 / Request options.
+     * @returns {Promise<RecordResponse>}
+     */
+    edit(dnsRecordId, params, options) {
+        const { zone_id, ...body } = params;
+        return patchResult(this._client, `/zones/${encodeURIComponent(zone_id)}/dns_records/${encodeURIComponent(dnsRecordId)}`, {
+            ...options,
+            body,
+        });
+    }
+    /**
+     * 导出 DNS 区域文件。
+     * Export DNS zone file.
+     *
+     * @param {RecordExportParams} params 路径参数 / Path params.
+     * @param {RequestOptions} [options] 请求选项 / Request options.
+     * @returns {Promise<RecordExportResponse>}
+     */
+    export(params, options) {
+        return getResult(this._client, `/zones/${encodeURIComponent(params.zone_id)}/dns_records/export`, {
+            ...options,
+            headers: {
+                ...options?.headers,
+                Accept: "text/plain",
+            },
+        });
+    }
+    /**
+     * 获取 DNS 记录。
+     * Get a DNS record.
+     *
+     * @param {string} dnsRecordId 记录 ID / Record ID.
+     * @param {RecordGetParams} params 路径参数 / Path params.
+     * @param {RequestOptions} [options] 请求选项 / Request options.
+     * @returns {Promise<RecordResponse>}
+     */
+    get(dnsRecordId, params, options) {
+        return getResult(this._client, `/zones/${encodeURIComponent(params.zone_id)}/dns_records/${encodeURIComponent(dnsRecordId)}`, options);
+    }
+    /**
+     * 导入 DNS 区域文件。
+     * Import DNS zone file.
+     *
+     * @param {RecordImportParams} params 请求参数 / Request params.
+     * @param {RequestOptions} [options] 请求选项 / Request options.
+     * @returns {Promise<RecordImportResponse>}
+     */
+    import(params, options) {
+        const { zone_id, file, proxied } = params;
+        return postResult(this._client, `/zones/${encodeURIComponent(zone_id)}/dns_records/import`, {
+            ...options,
+            body: createRecordImportBody(file, proxied),
+        });
+    }
+    /**
+     * 同步扫描并写入 DNS 记录。
+     * Scan and import DNS records synchronously.
+     *
+     * @param {RecordScanParams} params 请求参数 / Request params.
+     * @param {RequestOptions} [options] 请求选项 / Request options.
+     * @returns {Promise<RecordScanResponse>}
+     */
+    scan(params, options) {
+        const { zone_id, body } = params;
+        return postResult(this._client, `/zones/${encodeURIComponent(zone_id)}/dns_records/scan`, {
+            ...options,
+            body,
+        });
+    }
+    /**
+     * 获取异步扫描结果列表。
+     * List asynchronous scan results.
+     *
+     * @param {RecordScanListParams} params 路径参数 / Path params.
+     * @param {RequestOptions} [options] 请求选项 / Request options.
+     * @returns {PagePromise<RecordResponsesSinglePage, RecordResponse>}
+     */
+    scanList(params, options) {
+        return getAPIList(this._client, `/zones/${encodeURIComponent(params.zone_id)}/dns_records/scan/review`, RecordResponsesSinglePage, {}, options);
+    }
+    /**
+     * 接受或拒绝扫描出的 DNS 记录。
+     * Accept or reject scanned DNS records.
+     *
+     * @param {RecordScanReviewParams} params 请求参数 / Request params.
+     * @param {RequestOptions} [options] 请求选项 / Request options.
+     * @returns {Promise<RecordScanReviewResponse>}
+     */
+    scanReview(params, options) {
+        const { zone_id, ...body } = params;
+        return postResult(this._client, `/zones/${encodeURIComponent(zone_id)}/dns_records/scan/review`, {
+            ...options,
+            body,
+        });
+    }
+    /**
+     * 触发异步 DNS 记录扫描。
+     * Trigger asynchronous DNS record scan.
+     *
+     * @param {RecordScanTriggerParams} params 路径参数 / Path params.
+     * @param {RequestOptions} [options] 请求选项 / Request options.
+     * @returns {Promise<RecordScanTriggerResponse>}
+     */
+    scanTrigger(params, options) {
+        return postResult(this._client, `/zones/${encodeURIComponent(params.zone_id)}/dns_records/scan/trigger`, options);
+    }
 }
 /**
  * KV 资源。
@@ -368,7 +509,39 @@ class KVResource extends APIResource {
  */
 class NamespacesResource extends APIResource {
     keys = new KeysResource(this._client);
+    metadata = new MetadataResource(this._client);
     values = new ValuesResource(this._client);
+    /**
+     * 创建 Namespace。
+     * Create a namespace.
+     *
+     * @param {NamespaceCreateParams} params 请求参数 / Request params.
+     * @param {RequestOptions} [options] 请求选项 / Request options.
+     * @returns {Promise<Namespace>}
+     */
+    create(params, options) {
+        const { account_id, ...body } = params;
+        return postResult(this._client, `/accounts/${encodeURIComponent(account_id)}/storage/kv/namespaces`, {
+            ...options,
+            body,
+        });
+    }
+    /**
+     * 更新 Namespace。
+     * Update a namespace.
+     *
+     * @param {string} namespaceId Namespace ID / Namespace ID.
+     * @param {NamespaceUpdateParams} params 请求参数 / Request params.
+     * @param {RequestOptions} [options] 请求选项 / Request options.
+     * @returns {Promise<Namespace>}
+     */
+    update(namespaceId, params, options) {
+        const { account_id, ...body } = params;
+        return putResult(this._client, `/accounts/${encodeURIComponent(account_id)}/storage/kv/namespaces/${encodeURIComponent(namespaceId)}`, {
+            ...options,
+            body,
+        });
+    }
     /**
      * 列出 Namespace。
      * List namespaces.
@@ -380,6 +553,76 @@ class NamespacesResource extends APIResource {
     list(params, options) {
         const { account_id, ...query } = params;
         return getAPIList(this._client, `/accounts/${encodeURIComponent(account_id)}/storage/kv/namespaces`, NamespacesV4PagePaginationArray, query, options);
+    }
+    /**
+     * 删除 Namespace。
+     * Delete a namespace.
+     *
+     * @param {string} namespaceId Namespace ID / Namespace ID.
+     * @param {NamespaceDeleteParams} params 路径参数 / Path params.
+     * @param {RequestOptions} [options] 请求选项 / Request options.
+     * @returns {Promise<NamespaceDeleteResponse | null>}
+     */
+    delete(namespaceId, params, options) {
+        return deleteResult(this._client, `/accounts/${encodeURIComponent(params.account_id)}/storage/kv/namespaces/${encodeURIComponent(namespaceId)}`, options);
+    }
+    /**
+     * 批量删除 KV 键。
+     * Bulk delete KV keys.
+     *
+     * @param {string} namespaceId Namespace ID / Namespace ID.
+     * @param {NamespaceBulkDeleteParams} params 请求参数 / Request params.
+     * @param {RequestOptions} [options] 请求选项 / Request options.
+     * @returns {Promise<NamespaceBulkDeleteResponse | null>}
+     */
+    bulkDelete(namespaceId, params, options) {
+        return postResult(this._client, `/accounts/${encodeURIComponent(params.account_id)}/storage/kv/namespaces/${encodeURIComponent(namespaceId)}/bulk/delete`, {
+            ...options,
+            body: params.body,
+        });
+    }
+    /**
+     * 批量读取 KV 键。
+     * Bulk get KV keys.
+     *
+     * @param {string} namespaceId Namespace ID / Namespace ID.
+     * @param {NamespaceBulkGetParams} params 请求参数 / Request params.
+     * @param {RequestOptions} [options] 请求选项 / Request options.
+     * @returns {Promise<NamespaceBulkGetResponse | null>}
+     */
+    bulkGet(namespaceId, params, options) {
+        const { account_id, ...body } = params;
+        return postResult(this._client, `/accounts/${encodeURIComponent(account_id)}/storage/kv/namespaces/${encodeURIComponent(namespaceId)}/bulk/get`, {
+            ...options,
+            body,
+        });
+    }
+    /**
+     * 批量写入 KV 键。
+     * Bulk update KV keys.
+     *
+     * @param {string} namespaceId Namespace ID / Namespace ID.
+     * @param {NamespaceBulkUpdateParams} params 请求参数 / Request params.
+     * @param {RequestOptions} [options] 请求选项 / Request options.
+     * @returns {Promise<NamespaceBulkUpdateResponse | null>}
+     */
+    bulkUpdate(namespaceId, params, options) {
+        return putResult(this._client, `/accounts/${encodeURIComponent(params.account_id)}/storage/kv/namespaces/${encodeURIComponent(namespaceId)}/bulk`, {
+            ...options,
+            body: params.body,
+        });
+    }
+    /**
+     * 获取 Namespace。
+     * Get a namespace.
+     *
+     * @param {string} namespaceId Namespace ID / Namespace ID.
+     * @param {NamespaceGetParams} params 路径参数 / Path params.
+     * @param {RequestOptions} [options] 请求选项 / Request options.
+     * @returns {Promise<Namespace>}
+     */
+    get(namespaceId, params, options) {
+        return getResult(this._client, `/accounts/${encodeURIComponent(params.account_id)}/storage/kv/namespaces/${encodeURIComponent(namespaceId)}`, options);
     }
 }
 /**
@@ -400,6 +643,71 @@ class KeysResource extends APIResource {
         const { account_id, ...query } = params;
         return getAPIList(this._client, `/accounts/${encodeURIComponent(account_id)}/storage/kv/namespaces/${encodeURIComponent(namespaceId)}/keys`, KeysCursorPaginationAfter, query, options);
     }
+    /**
+     * 批量删除 KV 键。
+     * Bulk delete KV keys.
+     *
+     * @param {string} namespaceId Namespace ID / Namespace ID.
+     * @param {KeyBulkDeleteParams} params 请求参数 / Request params.
+     * @param {RequestOptions} [options] 请求选项 / Request options.
+     * @returns {Promise<KeyBulkDeleteResponse | null>}
+     */
+    bulkDelete(namespaceId, params, options) {
+        return postResult(this._client, `/accounts/${encodeURIComponent(params.account_id)}/storage/kv/namespaces/${encodeURIComponent(namespaceId)}/bulk/delete`, {
+            ...options,
+            body: params.body,
+        });
+    }
+    /**
+     * 批量读取 KV 键。
+     * Bulk get KV keys.
+     *
+     * @param {string} namespaceId Namespace ID / Namespace ID.
+     * @param {KeyBulkGetParams} params 请求参数 / Request params.
+     * @param {RequestOptions} [options] 请求选项 / Request options.
+     * @returns {Promise<KeyBulkGetResponse | null>}
+     */
+    bulkGet(namespaceId, params, options) {
+        const { account_id, ...body } = params;
+        return postResult(this._client, `/accounts/${encodeURIComponent(account_id)}/storage/kv/namespaces/${encodeURIComponent(namespaceId)}/bulk/get`, {
+            ...options,
+            body,
+        });
+    }
+    /**
+     * 批量写入 KV 键。
+     * Bulk update KV keys.
+     *
+     * @param {string} namespaceId Namespace ID / Namespace ID.
+     * @param {KeyBulkUpdateParams} params 请求参数 / Request params.
+     * @param {RequestOptions} [options] 请求选项 / Request options.
+     * @returns {Promise<KeyBulkUpdateResponse | null>}
+     */
+    bulkUpdate(namespaceId, params, options) {
+        return putResult(this._client, `/accounts/${encodeURIComponent(params.account_id)}/storage/kv/namespaces/${encodeURIComponent(namespaceId)}/bulk`, {
+            ...options,
+            body: params.body,
+        });
+    }
+}
+/**
+ * KV 元数据资源。
+ * KV metadata resource.
+ */
+class MetadataResource extends APIResource {
+    /**
+     * 读取 KV 元数据。
+     * Get KV metadata.
+     *
+     * @param {string} namespaceId Namespace ID / Namespace ID.
+     * @param {string} keyName 键名 / Key name.
+     * @param {MetadataGetParams} params 路径参数 / Path params.
+     * @param {RequestOptions} [options] 请求选项 / Request options.
+     * @returns {Promise<MetadataGetResponse>}
+     */
+    get(namespaceId, keyName, params, options) {
+        return getResult(this._client, `/accounts/${encodeURIComponent(params.account_id)}/storage/kv/namespaces/${encodeURIComponent(namespaceId)}/metadata/${encodeURIComponent(keyName)}`, options);
+    }
 }
 /**
  * KV 值资源。
@@ -414,7 +722,7 @@ class ValuesResource extends APIResource {
      * @param {string} keyName 键名 / Key name.
      * @param {ValueUpdateParams} params 请求参数 / Request params.
      * @param {RequestOptions} [options] 请求选项 / Request options.
-     * @returns {Promise<null>}
+     * @returns {Promise<ValueUpdateResponse | null>}
      */
     update(namespaceId, keyName, params, options) {
         const { account_id, expiration, expiration_ttl, value, metadata } = params;
@@ -459,7 +767,7 @@ class ValuesResource extends APIResource {
      * @param {string} keyName 键名 / Key name.
      * @param {ValueDeleteParams} params 路径参数 / Path params.
      * @param {RequestOptions} [options] 请求选项 / Request options.
-     * @returns {Promise<null>}
+     * @returns {Promise<ValueDeleteResponse | null>}
      */
     delete(namespaceId, keyName, params, options) {
         return deleteResult(this._client, `/accounts/${encodeURIComponent(params.account_id)}/storage/kv/namespaces/${encodeURIComponent(namespaceId)}/values/${encodeURIComponent(keyName)}`, options);
@@ -594,6 +902,9 @@ async function postResult(client, path, options) {
 }
 async function putResult(client, path, options) {
     return await requestClient(client, "PUT", path, options);
+}
+async function patchResult(client, path, options) {
+    return await requestClient(client, "PATCH", path, options);
 }
 async function deleteResult(client, path, options) {
     return await requestClient(client, "DELETE", path, options);
@@ -800,6 +1111,13 @@ function createKVValueBody(value, metadata) {
             return formData;
         }
     }
+}
+function createRecordImportBody(file, proxied) {
+    const formData = new FormData();
+    formData.append("file", file);
+    if (proxied !== undefined)
+        formData.append("proxied", proxied);
+    return formData;
 }
 function resolveKVValueHeaders(body) {
     return body instanceof FormData
