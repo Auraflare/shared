@@ -3,28 +3,28 @@ import { type FetchRequest, type FetchResponse } from "@nsnanocat/util";
  * Cloudflare 请求头。
  * Cloudflare request headers.
  */
-export interface HeadersLike {
+interface HeadersLike {
     [key: string]: string | number | boolean | null | undefined;
 }
 /**
  * Cloudflare 查询参数值。
  * Cloudflare query parameter value.
  */
-export type QueryValue = string | number | boolean | null | undefined | QueryValue[] | {
+type QueryValue = string | number | boolean | null | undefined | QueryValue[] | {
     [key: string]: QueryValue;
 };
 /**
  * Cloudflare 查询参数对象。
  * Cloudflare query parameter object.
  */
-export interface QueryLike {
+interface QueryLike {
     [key: string]: QueryValue;
 }
 /**
  * Cloudflare 自定义 fetch。
  * Cloudflare custom fetch.
  */
-export type FetchLike = (resource: string | FetchRequest, options?: Partial<FetchRequest>) => Promise<FetchResponse | Response | CloudflareResponse>;
+type FetchLike = (resource: string | FetchRequest, options?: Partial<FetchRequest>) => Promise<FetchResponse | Response | CloudflareResponse>;
 /**
  * 请求选项。
  * Request options.
@@ -58,7 +58,7 @@ export interface ClientOptions {
  * Cloudflare V4 错误项。
  * Cloudflare V4 error entry.
  */
-export interface CloudflareAPIErrorEntry {
+interface CloudflareAPIErrorEntry {
     code?: number;
     message?: string;
     [key: string]: unknown;
@@ -67,7 +67,7 @@ export interface CloudflareAPIErrorEntry {
  * Cloudflare V4 分页信息。
  * Cloudflare V4 pagination info.
  */
-export interface CloudflareResultInfo {
+interface CloudflareResultInfo {
     page?: number;
     per_page?: number;
     total_pages?: number;
@@ -82,7 +82,7 @@ export interface CloudflareResultInfo {
  * V4 分页数组参数。
  * V4 page array params.
  */
-export interface V4PagePaginationArrayParams {
+interface V4PagePaginationArrayParams {
     page?: number;
     per_page?: number;
     order?: string;
@@ -92,7 +92,7 @@ export interface V4PagePaginationArrayParams {
  * Cursor 分页参数。
  * Cursor pagination params.
  */
-export interface CursorPaginationAfterParams {
+interface CursorPaginationAfterParams {
     cursor?: string;
     limit?: number;
 }
@@ -203,7 +203,7 @@ declare class AbstractPage<TItem> implements AsyncIterable<TItem> {
  *
  * @template TItem 条目类型 / Item type.
  */
-export declare class V4PagePaginationArray<TItem> extends AbstractPage<TItem> {
+declare class V4PagePaginationArray<TItem> extends AbstractPage<TItem> {
     protected getNextQuery(): QueryLike | null;
 }
 /**
@@ -212,7 +212,7 @@ export declare class V4PagePaginationArray<TItem> extends AbstractPage<TItem> {
  *
  * @template TItem 条目类型 / Item type.
  */
-export declare class CursorPaginationAfter<TItem> extends AbstractPage<TItem> {
+declare class CursorPaginationAfter<TItem> extends AbstractPage<TItem> {
     protected getNextQuery(): QueryLike | null;
 }
 /**
@@ -222,7 +222,7 @@ export declare class CursorPaginationAfter<TItem> extends AbstractPage<TItem> {
  * @template TPage 分页类型 / Page type.
  * @template TItem 条目类型 / Item type.
  */
-export declare class PagePromise<TPage extends AbstractPage<TItem>, TItem = unknown> implements PromiseLike<TPage>, AsyncIterable<TItem> {
+declare class PagePromise<TPage extends AbstractPage<TItem>, TItem = unknown> implements PromiseLike<TPage>, AsyncIterable<TItem> {
     #private;
     constructor(factory: () => Promise<TPage>);
     then<TResult1 = TPage, TResult2 = never>(onfulfilled?: ((value: TPage) => TResult1 | PromiseLike<TResult1>) | null, onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null): PromiseLike<TResult1 | TResult2>;
@@ -232,7 +232,7 @@ export declare class PagePromise<TPage extends AbstractPage<TItem>, TItem = unkn
  * 用户信息。
  * User information.
  */
-export interface UserGetResponse {
+interface UserGetResponse {
     id?: string;
     betas?: string[];
     country?: string | null;
@@ -247,7 +247,7 @@ export interface UserGetResponse {
  * Token 校验结果。
  * Token verify result.
  */
-export interface TokenVerifyResponse {
+interface TokenVerifyResponse {
     id: string;
     status: "active" | "disabled" | "expired";
     [key: string]: unknown;
@@ -256,7 +256,7 @@ export interface TokenVerifyResponse {
  * Zone。
  * Zone.
  */
-export interface Zone {
+interface Zone {
     id?: string;
     name?: string;
     status?: string;
@@ -269,7 +269,7 @@ export interface Zone {
  * Zone 列表参数。
  * Zone list params.
  */
-export interface ZoneListParams extends V4PagePaginationArrayParams {
+interface ZoneListParams extends V4PagePaginationArrayParams {
     name?: string;
     status?: string;
     match?: string;
@@ -278,19 +278,19 @@ export interface ZoneListParams extends V4PagePaginationArrayParams {
  * Zone 获取参数。
  * Zone get params.
  */
-export interface ZoneGetParams {
+interface ZoneGetParams {
     zone_id: string;
 }
 /**
  * DNS 记录类型。
  * DNS record type.
  */
-export type DNSRecordType = "A" | "AAAA" | "CAA" | "CERT" | "CNAME" | "DNSKEY" | "DS" | "HTTPS" | "LOC" | "MX" | "NAPTR" | "NS" | "OPENPGPKEY" | "PTR" | "SMIMEA" | "SRV" | "SSHFP" | "SVCB" | "TLSA" | "TXT" | "URI";
+type DNSRecordType = "A" | "AAAA" | "CAA" | "CERT" | "CNAME" | "DNSKEY" | "DS" | "HTTPS" | "LOC" | "MX" | "NAPTR" | "NS" | "OPENPGPKEY" | "PTR" | "SMIMEA" | "SRV" | "SSHFP" | "SVCB" | "TLSA" | "TXT" | "URI";
 /**
  * DNS 记录响应。
  * DNS record response.
  */
-export interface RecordResponse {
+interface RecordResponse {
     id?: string;
     zone_id?: string;
     zone_name?: string;
@@ -308,7 +308,7 @@ export interface RecordResponse {
  * DNS 记录创建参数。
  * DNS record create params.
  */
-export interface RecordCreateParams {
+interface RecordCreateParams {
     zone_id: string;
     type: DNSRecordType;
     name: string;
@@ -323,13 +323,13 @@ export interface RecordCreateParams {
  * DNS 记录更新参数。
  * DNS record update params.
  */
-export interface RecordUpdateParams extends RecordCreateParams {
+interface RecordUpdateParams extends RecordCreateParams {
 }
 /**
  * DNS 记录列表参数。
  * DNS record list params.
  */
-export interface RecordListParams extends V4PagePaginationArrayParams {
+interface RecordListParams extends V4PagePaginationArrayParams {
     zone_id: string;
     type?: DNSRecordType;
     name?: string;
@@ -340,14 +340,14 @@ export interface RecordListParams extends V4PagePaginationArrayParams {
  * DNS 记录获取参数。
  * DNS record get params.
  */
-export interface RecordGetParams {
+interface RecordGetParams {
     zone_id: string;
 }
 /**
  * KV Namespace。
  * KV namespace.
  */
-export interface Namespace {
+interface Namespace {
     id?: string;
     title?: string;
     supports_url_encoding?: boolean;
@@ -357,14 +357,14 @@ export interface Namespace {
  * KV Namespace 列表参数。
  * KV namespace list params.
  */
-export interface NamespaceListParams extends V4PagePaginationArrayParams {
+interface NamespaceListParams extends V4PagePaginationArrayParams {
     account_id: string;
 }
 /**
  * KV 键。
  * KV key.
  */
-export interface Key {
+interface Key {
     name: string;
     expiration?: number;
     metadata?: unknown;
@@ -373,7 +373,7 @@ export interface Key {
  * KV 键列表参数。
  * KV key list params.
  */
-export interface KeyListParams extends CursorPaginationAfterParams {
+interface KeyListParams extends CursorPaginationAfterParams {
     account_id: string;
     prefix?: string;
 }
@@ -381,7 +381,7 @@ export interface KeyListParams extends CursorPaginationAfterParams {
  * KV 值写入参数。
  * KV value update params.
  */
-export interface ValueUpdateParams {
+interface ValueUpdateParams {
     account_id: string;
     value: string;
     expiration?: number;
@@ -392,39 +392,39 @@ export interface ValueUpdateParams {
  * KV 值读取参数。
  * KV value get params.
  */
-export interface ValueGetParams {
+interface ValueGetParams {
     account_id: string;
 }
 /**
  * KV 值删除参数。
  * KV value delete params.
  */
-export interface ValueDeleteParams {
+interface ValueDeleteParams {
     account_id: string;
 }
 /**
  * Zone 分页结果。
  * Zone pagination result.
  */
-export declare class ZonesV4PagePaginationArray extends V4PagePaginationArray<Zone> {
+declare class ZonesV4PagePaginationArray extends V4PagePaginationArray<Zone> {
 }
 /**
  * DNS 记录分页结果。
  * DNS record pagination result.
  */
-export declare class RecordResponsesV4PagePaginationArray extends V4PagePaginationArray<RecordResponse> {
+declare class RecordResponsesV4PagePaginationArray extends V4PagePaginationArray<RecordResponse> {
 }
 /**
  * Namespace 分页结果。
  * Namespace pagination result.
  */
-export declare class NamespacesV4PagePaginationArray extends V4PagePaginationArray<Namespace> {
+declare class NamespacesV4PagePaginationArray extends V4PagePaginationArray<Namespace> {
 }
 /**
  * KV 键 Cursor 分页结果。
  * KV key cursor pagination result.
  */
-export declare class KeysCursorPaginationAfter extends CursorPaginationAfter<Key> {
+declare class KeysCursorPaginationAfter extends CursorPaginationAfter<Key> {
 }
 declare class APIResource {
     protected readonly _client: Cloudflare;
@@ -434,7 +434,7 @@ declare class APIResource {
  * 用户资源。
  * User resource.
  */
-export declare class UserResource extends APIResource {
+declare class UserResource extends APIResource {
     readonly tokens: UserTokensResource;
     /**
      * 获取当前用户。
@@ -449,7 +449,7 @@ export declare class UserResource extends APIResource {
  * 用户 Token 资源。
  * User token resource.
  */
-export declare class UserTokensResource extends APIResource {
+declare class UserTokensResource extends APIResource {
     /**
      * 校验当前 Token。
      * Verify the current token.
@@ -463,7 +463,7 @@ export declare class UserTokensResource extends APIResource {
  * Zone 资源。
  * Zone resource.
  */
-export declare class ZonesResource extends APIResource {
+declare class ZonesResource extends APIResource {
     /**
      * 列出 Zone。
      * List zones.
@@ -487,14 +487,14 @@ export declare class ZonesResource extends APIResource {
  * DNS 资源。
  * DNS resource.
  */
-export declare class DNSResource extends APIResource {
+declare class DNSResource extends APIResource {
     readonly records: DNSRecordsResource;
 }
 /**
  * DNS 记录资源。
  * DNS records resource.
  */
-export declare class DNSRecordsResource extends APIResource {
+declare class DNSRecordsResource extends APIResource {
     /**
      * 创建 DNS 记录。
      * Create a DNS record.
@@ -538,14 +538,14 @@ export declare class DNSRecordsResource extends APIResource {
  * KV 资源。
  * KV resource.
  */
-export declare class KVResource extends APIResource {
+declare class KVResource extends APIResource {
     readonly namespaces: NamespacesResource;
 }
 /**
  * KV Namespace 资源。
  * KV namespace resource.
  */
-export declare class NamespacesResource extends APIResource {
+declare class NamespacesResource extends APIResource {
     readonly keys: KeysResource;
     readonly values: ValuesResource;
     /**
@@ -562,7 +562,7 @@ export declare class NamespacesResource extends APIResource {
  * KV 键资源。
  * KV keys resource.
  */
-export declare class KeysResource extends APIResource {
+declare class KeysResource extends APIResource {
     /**
      * 列出 KV 键。
      * List KV keys.
@@ -578,7 +578,7 @@ export declare class KeysResource extends APIResource {
  * KV 值资源。
  * KV values resource.
  */
-export declare class ValuesResource extends APIResource {
+declare class ValuesResource extends APIResource {
     /**
      * 写入 KV 值。
      * Update a KV value.

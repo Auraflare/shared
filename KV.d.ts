@@ -1,4 +1,4 @@
-import Cloudflare, { type ClientOptions, type Key } from "./Cloudflare.mjs";
+import Cloudflare, { type ClientOptions } from "./Cloudflare.mjs";
 /**
  * KV 键列表查询参数。
  * KV key list query options.
@@ -12,7 +12,10 @@ export interface KVListOptions {
  * KV 键列表项。
  * KV key list entry.
  */
-export interface KVListKey extends Key {
+interface KVListKey {
+    name: string;
+    expiration?: number;
+    metadata?: unknown;
 }
 /**
  * KV 键列表结果。
@@ -53,7 +56,7 @@ export interface KVInitOptions extends ClientOptions {
  * KV 初始化参数。
  * KV initialization input.
  */
-export type KVInit = KVNamespaceLike | KVInitOptions | null | undefined;
+type KVInit = KVNamespaceLike | KVInitOptions | null | undefined;
 /**
  * Cloudflare KV 异步适配器。
  * Cloudflare KV async adapter.
@@ -130,7 +133,4 @@ export declare class KV {
      * @returns {Promise<KVListResult>}
      */
     list(options?: KVListOptions): Promise<KVListResult>;
-}
-export declare namespace KV {
-    export { type KVListOptions as KVListOptions, type KVListKey as KVListKey, type KVListResult as KVListResult, type KVNamespaceLike as KVNamespaceLike, type KVInitOptions as KVInitOptions, type KVInit as KVInit, };
 }

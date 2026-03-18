@@ -149,7 +149,7 @@ class AbstractPage {
  *
  * @template TItem 条目类型 / Item type.
  */
-export class V4PagePaginationArray extends AbstractPage {
+class V4PagePaginationArray extends AbstractPage {
     getNextQuery() {
         const page = Number(this.result_info.page ?? this._query.page ?? 1);
         const totalPages = Number(this.result_info.total_pages ?? 0);
@@ -164,7 +164,7 @@ export class V4PagePaginationArray extends AbstractPage {
  *
  * @template TItem 条目类型 / Item type.
  */
-export class CursorPaginationAfter extends AbstractPage {
+class CursorPaginationAfter extends AbstractPage {
     getNextQuery() {
         const cursor = this.result_info.cursor ?? this.result_info.cursors?.after;
         return cursor ? { ...this._query, cursor } : null;
@@ -177,7 +177,7 @@ export class CursorPaginationAfter extends AbstractPage {
  * @template TPage 分页类型 / Page type.
  * @template TItem 条目类型 / Item type.
  */
-export class PagePromise {
+class PagePromise {
     #factory;
     #promise;
     constructor(factory) {
@@ -199,25 +199,25 @@ export class PagePromise {
  * Zone 分页结果。
  * Zone pagination result.
  */
-export class ZonesV4PagePaginationArray extends V4PagePaginationArray {
+class ZonesV4PagePaginationArray extends V4PagePaginationArray {
 }
 /**
  * DNS 记录分页结果。
  * DNS record pagination result.
  */
-export class RecordResponsesV4PagePaginationArray extends V4PagePaginationArray {
+class RecordResponsesV4PagePaginationArray extends V4PagePaginationArray {
 }
 /**
  * Namespace 分页结果。
  * Namespace pagination result.
  */
-export class NamespacesV4PagePaginationArray extends V4PagePaginationArray {
+class NamespacesV4PagePaginationArray extends V4PagePaginationArray {
 }
 /**
  * KV 键 Cursor 分页结果。
  * KV key cursor pagination result.
  */
-export class KeysCursorPaginationAfter extends CursorPaginationAfter {
+class KeysCursorPaginationAfter extends CursorPaginationAfter {
 }
 class APIResource {
     _client;
@@ -229,7 +229,7 @@ class APIResource {
  * 用户资源。
  * User resource.
  */
-export class UserResource extends APIResource {
+class UserResource extends APIResource {
     tokens = new UserTokensResource(this._client);
     /**
      * 获取当前用户。
@@ -246,7 +246,7 @@ export class UserResource extends APIResource {
  * 用户 Token 资源。
  * User token resource.
  */
-export class UserTokensResource extends APIResource {
+class UserTokensResource extends APIResource {
     /**
      * 校验当前 Token。
      * Verify the current token.
@@ -262,7 +262,7 @@ export class UserTokensResource extends APIResource {
  * Zone 资源。
  * Zone resource.
  */
-export class ZonesResource extends APIResource {
+class ZonesResource extends APIResource {
     /**
      * 列出 Zone。
      * List zones.
@@ -291,14 +291,14 @@ export class ZonesResource extends APIResource {
  * DNS 资源。
  * DNS resource.
  */
-export class DNSResource extends APIResource {
+class DNSResource extends APIResource {
     records = new DNSRecordsResource(this._client);
 }
 /**
  * DNS 记录资源。
  * DNS records resource.
  */
-export class DNSRecordsResource extends APIResource {
+class DNSRecordsResource extends APIResource {
     /**
      * 创建 DNS 记录。
      * Create a DNS record.
@@ -359,14 +359,14 @@ export class DNSRecordsResource extends APIResource {
  * KV 资源。
  * KV resource.
  */
-export class KVResource extends APIResource {
+class KVResource extends APIResource {
     namespaces = new NamespacesResource(this._client);
 }
 /**
  * KV Namespace 资源。
  * KV namespace resource.
  */
-export class NamespacesResource extends APIResource {
+class NamespacesResource extends APIResource {
     keys = new KeysResource(this._client);
     values = new ValuesResource(this._client);
     /**
@@ -386,7 +386,7 @@ export class NamespacesResource extends APIResource {
  * KV 键资源。
  * KV keys resource.
  */
-export class KeysResource extends APIResource {
+class KeysResource extends APIResource {
     /**
      * 列出 KV 键。
      * List KV keys.
@@ -405,7 +405,7 @@ export class KeysResource extends APIResource {
  * KV 值资源。
  * KV values resource.
  */
-export class ValuesResource extends APIResource {
+class ValuesResource extends APIResource {
     /**
      * 写入 KV 值。
      * Update a KV value.

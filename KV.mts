@@ -2,11 +2,6 @@ import { Lodash as _, Storage } from "@nsnanocat/util";
 import Cloudflare, {
 	type ClientOptions,
 	type CloudflareResponse,
-	type Key,
-	type KeyListParams,
-	type ValueDeleteParams,
-	type ValueGetParams,
-	type ValueUpdateParams,
 } from "./Cloudflare.mjs";
 
 /**
@@ -23,7 +18,11 @@ export interface KVListOptions {
  * KV 键列表项。
  * KV key list entry.
  */
-export interface KVListKey extends Key {}
+interface KVListKey {
+	name: string;
+	expiration?: number;
+	metadata?: unknown;
+}
 
 /**
  * KV 键列表结果。
@@ -67,7 +66,30 @@ export interface KVInitOptions extends ClientOptions {
  * KV 初始化参数。
  * KV initialization input.
  */
-export type KVInit = KVNamespaceLike | KVInitOptions | null | undefined;
+type KVInit = KVNamespaceLike | KVInitOptions | null | undefined;
+
+interface KeyListParams {
+	account_id: string;
+	prefix?: string;
+	limit?: number;
+	cursor?: string;
+}
+
+interface ValueUpdateParams {
+	account_id: string;
+	value: string;
+	expiration?: number;
+	expiration_ttl?: number;
+	metadata?: unknown;
+}
+
+interface ValueGetParams {
+	account_id: string;
+}
+
+interface ValueDeleteParams {
+	account_id: string;
+}
 
 /**
  * Cloudflare KV 异步适配器。
@@ -314,17 +336,6 @@ export class KV {
 			cursor,
 		};
 	}
-}
-
-export declare namespace KV {
-	export {
-		type KVListOptions as KVListOptions,
-		type KVListKey as KVListKey,
-		type KVListResult as KVListResult,
-		type KVNamespaceLike as KVNamespaceLike,
-		type KVInitOptions as KVInitOptions,
-		type KVInit as KVInit,
-	};
 }
 
 function resolveNamespace(init?: KVInit): KVNamespaceLike | null | undefined {
