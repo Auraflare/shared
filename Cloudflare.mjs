@@ -803,7 +803,7 @@ export class Cloudflare {
             timeout: options?.timeout ?? DEFAULT_TIMEOUT,
             headers: options?.headers,
         });
-        const body = getFetchResponseText(rawResponse);
+        const body = typeof rawResponse.body === "string" ? rawResponse.body : "";
         return Object.fromEntries(body
             .trim()
             .split("\n")
@@ -859,7 +859,7 @@ async function requestClient(client, method, path, options = {}) {
         case "binary":
             return response;
         default: {
-            const rawBody = getFetchResponseText(response);
+            const rawBody = typeof response.body === "string" ? response.body : "";
             let body = null;
             switch (true) {
                 // 有响应体时优先按 JSON 解析，失败则保留原始文本。
@@ -1041,7 +1041,7 @@ async function createError(response, body) {
         // 调用方未提供 payload 时，从响应体读取并尝试解析。
         // Read and parse response body only when payload is not provided by caller.
         case payload === undefined: {
-            const rawBody = getFetchResponseText(response);
+            const rawBody = typeof response.body === "string" ? response.body : "";
             switch (true) {
                 // 非空响应体优先按 JSON 解析，失败则保留原始文本。
                 // Parse non-empty response text as JSON first; keep raw text on failure.
@@ -1082,16 +1082,4 @@ async function createError(response, body) {
 function readEnv(name) {
     const runtime = globalThis;
     return runtime.process?.env?.[name] ?? null;
-}
-function getFetchResponseText(response) {
-    switch (true) {
-        case typeof response.body === "string":
-            return response.body;
-        case response.bodyBytes instanceof ArrayBuffer:
-            return new TextDecoder().decode(response.bodyBytes);
-        case response.body instanceof ArrayBuffer:
-            return new TextDecoder().decode(response.body);
-        default:
-            return "";
-    }
 }
