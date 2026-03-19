@@ -37,15 +37,6 @@ interface QueryLike {
 }
 
 /**
- * Cloudflare 自定义 fetch。
- * Cloudflare custom fetch.
- */
-type FetchLike = (
-	resource: string | FetchRequest,
-	options?: Partial<FetchRequest>,
-) => Promise<FetchResponse | Response | CloudflareResponse>;
-
-/**
  * 请求选项。
  * Request options.
  */
@@ -54,7 +45,6 @@ export interface RequestOptions {
 	query?: QueryLike;
 	timeout?: number;
 	maxRetries?: number;
-	fetch?: FetchLike;
 }
 
 /**
@@ -70,7 +60,6 @@ export interface ClientOptions {
 	apiVersion?: string | null | undefined;
 	timeout?: number | undefined;
 	httpAgent?: unknown;
-	fetch?: FetchLike | undefined;
 	maxRetries?: number | undefined;
 	defaultHeaders?: HeadersLike | undefined;
 	defaultQuery?: QueryLike | undefined;
@@ -133,100 +122,6 @@ interface V4PagePaginationArrayParams {
 interface CursorPaginationAfterParams {
 	cursor?: string;
 	limit?: number;
-}
-
-/**
- * Web Response 兼容响应。
- * Web Response compatible response.
- */
-export class CloudflareResponse {
-	readonly ok: boolean;
-	readonly status: number;
-	readonly statusText: string;
-	readonly headers: Headers;
-	readonly url: string;
-	#body: string | ArrayBuffer;
-
-	/**
-	 * 创建响应对象。
-	 * Create a response object.
-	 *
-	 * @param {string | ArrayBuffer} body 响应体 / Response body.
-	 * @param {{ status?: number; statusText?: string; headers?: HeadersInit; url?: string }} [init={}] 初始化信息 / Response init.
-	 */
-	constructor(
-		body: string | ArrayBuffer,
-		init: {
-			status?: number;
-			statusText?: string;
-			headers?: HeadersInit | HeadersLike;
-			url?: string;
-		} = {},
-		) {
-			this.#body = typeof body === "string" ? body : body.slice(0);
-			this.status = init.status ?? 200;
-			this.statusText = init.statusText ?? "";
-			this.headers = new Headers(init.headers as HeadersInit | undefined);
-			this.url = init.url ?? "";
-			this.ok = this.status >= 200 && this.status < 300;
-		}
-
-	/**
-	 * 读取文本响应体。
-	 * Read the response body as text.
-	 *
-	 * @returns {Promise<string>}
-	 */
-	async text(): Promise<string> {
-		return typeof this.#body === "string" ? this.#body : new TextDecoder().decode(this.#body);
-	}
-
-	/**
-	 * 读取 JSON 响应体。
-	 * Read the response body as JSON.
-	 *
-	 * @returns {Promise<unknown>}
-	 */
-	async json(): Promise<unknown> {
-		return JSON.parse(await this.text());
-	}
-
-	/**
-	 * 读取 ArrayBuffer 响应体。
-	 * Read the response body as ArrayBuffer.
-	 *
-	 * @returns {Promise<ArrayBuffer>}
-	 */
-	async arrayBuffer(): Promise<ArrayBuffer> {
-		return typeof this.#body === "string"
-			? (new TextEncoder().encode(this.#body).buffer as ArrayBuffer)
-			: (this.#body.slice(0) as ArrayBuffer);
-	}
-
-	/**
-	 * 读取 Blob 响应体。
-	 * Read the response body as Blob.
-	 *
-	 * @returns {Promise<Blob>}
-	 */
-	async blob(): Promise<Blob> {
-		return new Blob([await this.arrayBuffer()]);
-	}
-
-	/**
-	 * 克隆响应。
-	 * Clone the response.
-	 *
-	 * @returns {CloudflareResponse}
-	 */
-	clone(): CloudflareResponse {
-		return new CloudflareResponse(this.#body, {
-			status: this.status,
-			statusText: this.statusText,
-			headers: this.headers,
-			url: this.url,
-		});
-	}
 }
 
 /**
@@ -1137,7 +1032,7 @@ class ZonesResource extends APIResource {
 		const isOptions =
 			typeof queryOrOptions === "object" &&
 			queryOrOptions !== null &&
-			["headers", "query", "timeout", "maxRetries", "fetch"].some(key => key in queryOrOptions);
+			["headers", "query", "timeout", "maxRetries"].some(key => key in queryOrOptions);
 		const query = isOptions ? {} : ({ ...((queryOrOptions as ZoneListParams | undefined) ?? {}) } as QueryLike);
 		const requestOptions = isOptions ? (queryOrOptions as RequestOptions) : options;
 		return getAPIList<ZonesV4PagePaginationArray, Zone>(
@@ -1798,14 +1693,14 @@ class ValuesResource extends APIResource {
 	 * @param {string} keyName 键名 / Key name.
 	 * @param {ValueGetParams} params 路径参数 / Path params.
 	 * @param {RequestOptions} [options] 请求选项 / Request options.
-	 * @returns {Promise<CloudflareResponse>}
+	 * @returns {Promise<FetchResponse>}
 	 */
 	get(
 		namespaceId: string,
 		keyName: string,
 		params: ValueGetParams,
 		options?: RequestOptions,
-	): Promise<CloudflareResponse> {
+	): Promise<FetchResponse> {
 		return getBinaryResponse(
 			this._client,
 			`/accounts/${encodeURIComponent(params.account_id)}/storage/kv/namespaces/${encodeURIComponent(namespaceId)}/values/${encodeURIComponent(keyName)}`,
@@ -1859,7 +1754,7 @@ class ValuesResource extends APIResource {
  * const response = await client.kv.namespaces.values.get("namespace-id", "KEY", {
  * 	account_id: "account-id",
  * });
- * const value = await response.text();
+ * const value = typeof response.body === "string" ? response.body : "";
  * ```
  */
 export class Cloudflare {
@@ -1871,7 +1766,6 @@ export class Cloudflare {
 	readonly apiVersion: string | null;
 	readonly timeout: number;
 	readonly httpAgent?: unknown;
-	readonly fetch?: FetchLike;
 	readonly maxRetries: number;
 	readonly defaultHeaders: HeadersLike;
 	readonly defaultQuery: QueryLike;
@@ -1897,7 +1791,6 @@ export class Cloudflare {
 		this.apiVersion = options.apiVersion ?? null;
 		this.timeout = options.timeout ?? DEFAULT_TIMEOUT;
 		this.httpAgent = options.httpAgent;
-		this.fetch = options.fetch;
 		this.maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
 		this.defaultHeaders = { ...(options.defaultHeaders ?? {}) };
 		this.defaultQuery = { ...(options.defaultQuery ?? {}) };
@@ -1937,13 +1830,12 @@ export class Cloudflare {
 	}
 
 	static async #trace(url: string, options?: RequestOptions): Promise<Record<string, string>> {
-		const rawResponse = await (options?.fetch ?? utilFetch)(url, {
+		const rawResponse = await utilFetch(url, {
 			method: "GET",
 			timeout: options?.timeout ?? DEFAULT_TIMEOUT,
 			headers: options?.headers,
 		});
-		const response = await normalizeResponse(rawResponse, url);
-		const body = await response.text();
+		const body = getFetchResponseText(rawResponse);
 		return Object.fromEntries(
 			body
 				.trim()
@@ -2092,8 +1984,8 @@ async function deleteResult<Result>(client: Cloudflare, path: string, options?: 
 	return await requestClient<Result>(client, "DELETE", path, options);
 }
 
-async function getBinaryResponse(client: Cloudflare, path: string, options?: RequestOptions): Promise<CloudflareResponse> {
-	return await requestClient<CloudflareResponse>(client, "GET", path, {
+async function getBinaryResponse(client: Cloudflare, path: string, options?: RequestOptions): Promise<FetchResponse> {
+	return await requestClient<FetchResponse>(client, "GET", path, {
 		...options,
 		responseType: "binary",
 	});
@@ -2115,7 +2007,7 @@ async function requestClient<Result>(
 		case "binary":
 			return response as Result;
 		default: {
-			const rawBody = await response.text();
+			const rawBody = getFetchResponseText(response);
 			let body: unknown = null;
 			switch (true) {
 				// 有响应体时优先按 JSON 解析，失败则保留原始文本。
@@ -2158,7 +2050,7 @@ async function fetchResponse(
 	options: RequestOptions & {
 		body?: unknown;
 	},
-): Promise<CloudflareResponse> {
+): Promise<FetchResponse> {
 	const url = createURL(client, path, options.query);
 	const headers = {
 		...client.defaultHeaders,
@@ -2197,48 +2089,47 @@ async function fetchResponse(
 		default:
 			break;
 	}
-	const fetcher = options.fetch ?? client.fetch ?? utilFetch;
 	const timeout = options.timeout ?? client.timeout;
 	const maxRetries = options.maxRetries ?? client.maxRetries;
 	let attempt = 0;
 	while (true) {
 		try {
-			const rawResponse = await fetcher(url.toString(), {
+			const rawResponse = await utilFetch(url.toString(), {
 				method,
 				headers,
 				body: body as FetchRequest["body"],
 				timeout,
-				});
-				const response = await normalizeResponse(rawResponse, url.toString());
-				switch (true) {
-					// 命中可重试状态且未超过上限：指数退避后重试。
-					// Retry with exponential backoff for retryable status while attempts remain.
-					case attempt < maxRetries && (RETRYABLE_STATUS_CODES.has(response.status) || response.status >= 500):
-						// Reuse current backoff policy inline to avoid helper indirection.
-						await new Promise(resolve => setTimeout(resolve, 200 * 2 ** attempt));
-						attempt += 1;
-						continue;
-					// 其余状态直接返回。
-					// Return immediately for non-retryable statuses.
-					default:
-						break;
-				}
-				return response;
-			} catch (error) {
-				switch (true) {
-					// 已达到重试上限，抛出最后一次错误。
-					// Throw the last error once retry budget is exhausted.
-					case attempt >= maxRetries:
-						throw error;
-					// 仍可重试时先退避，再进行下一次请求。
-					// Back off and retry when retry budget is still available.
-					default:
-						await new Promise(resolve => setTimeout(resolve, 200 * 2 ** attempt));
-						attempt += 1;
-						break;
-				}
+			});
+			const response = rawResponse;
+			switch (true) {
+				// 命中可重试状态且未超过上限：指数退避后重试。
+				// Retry with exponential backoff for retryable status while attempts remain.
+				case attempt < maxRetries && (RETRYABLE_STATUS_CODES.has(response.status) || response.status >= 500):
+					// Reuse current backoff policy inline to avoid helper indirection.
+					await new Promise(resolve => setTimeout(resolve, 200 * 2 ** attempt));
+					attempt += 1;
+					continue;
+				// 其余状态直接返回。
+				// Return immediately for non-retryable statuses.
+				default:
+					break;
+			}
+			return response;
+		} catch (error) {
+			switch (true) {
+				// 已达到重试上限，抛出最后一次错误。
+				// Throw the last error once retry budget is exhausted.
+				case attempt >= maxRetries:
+					throw error;
+				// 仍可重试时先退避，再进行下一次请求。
+				// Back off and retry when retry budget is still available.
+				default:
+					await new Promise(resolve => setTimeout(resolve, 200 * 2 ** attempt));
+					attempt += 1;
+					break;
 			}
 		}
+	}
 }
 
 function createURL(client: Cloudflare, path: string, query: QueryLike = {}): URL {
@@ -2297,13 +2188,13 @@ function createAuthHeaders(client: Cloudflare): HeadersLike {
 	}
 }
 
-async function createError(response: CloudflareResponse, body?: unknown): Promise<CloudflareAPIError> {
+async function createError(response: FetchResponse, body?: unknown): Promise<CloudflareAPIError> {
 	let payload = body;
 	switch (true) {
 		// 调用方未提供 payload 时，从响应体读取并尝试解析。
 		// Read and parse response body only when payload is not provided by caller.
 		case payload === undefined: {
-			const rawBody = await response.text();
+			const rawBody = getFetchResponseText(response);
 			switch (true) {
 				// 非空响应体优先按 JSON 解析，失败则保留原始文本。
 				// Parse non-empty response text as JSON first; keep raw text on failure.
@@ -2352,34 +2243,15 @@ function readEnv(name: string): string | null {
 	return runtime.process?.env?.[name] ?? null;
 }
 
-async function normalizeResponse(rawResponse: FetchResponse | Response | CloudflareResponse, url = ""): Promise<CloudflareResponse> {
+function getFetchResponseText(response: FetchResponse): string {
 	switch (true) {
-		// 已是统一响应类型时直接返回。
-		// Return directly when response is already normalized.
-		case rawResponse instanceof CloudflareResponse:
-			return rawResponse;
-		// 标准 Web Response：读取二进制体并封装为 CloudflareResponse。
-		// Web Response: read binary body and wrap into CloudflareResponse.
-		case typeof (rawResponse as Response).arrayBuffer === "function": {
-			const response = rawResponse as Response;
-			return new CloudflareResponse(await response.clone().arrayBuffer(), {
-				status: response.status,
-				statusText: response.statusText,
-				headers: response.headers,
-				url: response.url || url,
-			});
-		}
-		// 其余按 util FetchResponse 结构读取并封装。
-		// Otherwise map util FetchResponse shape into CloudflareResponse.
+		case typeof response.body === "string":
+			return response.body;
+		case response.bodyBytes instanceof ArrayBuffer:
+			return new TextDecoder().decode(response.bodyBytes);
+		case response.body instanceof ArrayBuffer:
+			return new TextDecoder().decode(response.body);
 		default:
-			break;
+			return "";
 	}
-	const response = rawResponse as FetchResponse;
-	const body = response.bodyBytes ?? response.body ?? "";
-	return new CloudflareResponse(typeof body === "string" ? body : (body as ArrayBuffer), {
-		status: response.status ?? response.statusCode ?? 0,
-		statusText: response.statusText ?? "",
-		headers: response.headers as HeadersLike | undefined,
-		url,
-	});
 }

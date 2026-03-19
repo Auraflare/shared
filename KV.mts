@@ -1,7 +1,6 @@
-import { Lodash as _, Storage } from "@nsnanocat/util";
+import { Lodash as _, Storage, type FetchResponse } from "@nsnanocat/util";
 import Cloudflare, {
 	type ClientOptions,
-	type CloudflareResponse,
 } from "./Cloudflare.mjs";
 
 /**
@@ -367,7 +366,6 @@ function shouldCreateClient(init?: KVInitOptions): boolean {
 		"apiEmail",
 		"userServiceKey",
 		"baseURL",
-		"fetch",
 		"timeout",
 		"defaultHeaders",
 		"defaultQuery",
@@ -396,12 +394,21 @@ function serialize(value: unknown): string {
 	}
 }
 
-async function readResponseText(response: CloudflareResponse): Promise<string | null> {
+async function readResponseText(response: FetchResponse): Promise<string | null> {
 	switch (response.status) {
 		case 404:
 			return null;
 		default:
-			return await response.text();
+			switch (true) {
+				case typeof response.body === "string":
+					return response.body;
+				case response.bodyBytes instanceof ArrayBuffer:
+					return new TextDecoder().decode(response.bodyBytes);
+				case response.body instanceof ArrayBuffer:
+					return new TextDecoder().decode(response.body);
+				default:
+					return "";
+			}
 	}
 }
 

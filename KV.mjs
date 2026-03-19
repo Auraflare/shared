@@ -267,7 +267,6 @@ function shouldCreateClient(init) {
         "apiEmail",
         "userServiceKey",
         "baseURL",
-        "fetch",
         "timeout",
         "defaultHeaders",
         "defaultQuery",
@@ -299,7 +298,16 @@ async function readResponseText(response) {
         case 404:
             return null;
         default:
-            return await response.text();
+            switch (true) {
+                case typeof response.body === "string":
+                    return response.body;
+                case response.bodyBytes instanceof ArrayBuffer:
+                    return new TextDecoder().decode(response.bodyBytes);
+                case response.body instanceof ArrayBuffer:
+                    return new TextDecoder().decode(response.body);
+                default:
+                    return "";
+            }
     }
 }
 function isNotFoundError(error) {

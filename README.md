@@ -31,7 +31,6 @@ import Cloudflare, { KV } from "@auraflare/shared";
 
 - `default` -> `Cloudflare`
 - `Cloudflare`
-- `CloudflareResponse`
 - `CloudflareAPIError`
 
 类型导出：
@@ -41,7 +40,7 @@ import Cloudflare, { KV } from "@auraflare/shared";
 - `records + kv` 相关参数与响应类型（如 `Record*` / `Namespace*` / `Key*` / `Value*` / `Metadata*`）
 
 ```ts
-import Cloudflare, { CloudflareResponse, CloudflareAPIError } from "@auraflare/shared/Cloudflare";
+import Cloudflare, { CloudflareAPIError } from "@auraflare/shared/Cloudflare";
 import type { ClientOptions, RequestOptions } from "@auraflare/shared/Cloudflare";
 ```
 
@@ -184,14 +183,17 @@ const response = await client.kv.namespaces.values.get("namespace-id", "KEY", {
 	account_id: "account-id",
 });
 
-const value = await response.text();
+const value =
+	typeof response.body === "string"
+		? response.body
+		: new TextDecoder().decode(response.bodyBytes ?? new ArrayBuffer(0));
 
 await client.kv.namespaces.values.delete("namespace-id", "KEY", {
 	account_id: "account-id",
 });
 ```
 
-注意：`values.get()` 返回 `CloudflareResponse`，不是自动解析后的字符串。
+注意：`values.get()` 返回 `FetchResponse`（来自 `@nsnanocat/util`），不是自动解析后的字符串。
 
 ### Trace
 

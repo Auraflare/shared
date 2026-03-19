@@ -4,85 +4,6 @@ const DEFAULT_TIMEOUT = 60_000;
 const DEFAULT_MAX_RETRIES = 2;
 const RETRYABLE_STATUS_CODES = new Set([408, 409, 429]);
 /**
- * Web Response 兼容响应。
- * Web Response compatible response.
- */
-export class CloudflareResponse {
-    ok;
-    status;
-    statusText;
-    headers;
-    url;
-    #body;
-    /**
-     * 创建响应对象。
-     * Create a response object.
-     *
-     * @param {string | ArrayBuffer} body 响应体 / Response body.
-     * @param {{ status?: number; statusText?: string; headers?: HeadersInit; url?: string }} [init={}] 初始化信息 / Response init.
-     */
-    constructor(body, init = {}) {
-        this.#body = typeof body === "string" ? body : body.slice(0);
-        this.status = init.status ?? 200;
-        this.statusText = init.statusText ?? "";
-        this.headers = new Headers(init.headers);
-        this.url = init.url ?? "";
-        this.ok = this.status >= 200 && this.status < 300;
-    }
-    /**
-     * 读取文本响应体。
-     * Read the response body as text.
-     *
-     * @returns {Promise<string>}
-     */
-    async text() {
-        return typeof this.#body === "string" ? this.#body : new TextDecoder().decode(this.#body);
-    }
-    /**
-     * 读取 JSON 响应体。
-     * Read the response body as JSON.
-     *
-     * @returns {Promise<unknown>}
-     */
-    async json() {
-        return JSON.parse(await this.text());
-    }
-    /**
-     * 读取 ArrayBuffer 响应体。
-     * Read the response body as ArrayBuffer.
-     *
-     * @returns {Promise<ArrayBuffer>}
-     */
-    async arrayBuffer() {
-        return typeof this.#body === "string"
-            ? new TextEncoder().encode(this.#body).buffer
-            : this.#body.slice(0);
-    }
-    /**
-     * 读取 Blob 响应体。
-     * Read the response body as Blob.
-     *
-     * @returns {Promise<Blob>}
-     */
-    async blob() {
-        return new Blob([await this.arrayBuffer()]);
-    }
-    /**
-     * 克隆响应。
-     * Clone the response.
-     *
-     * @returns {CloudflareResponse}
-     */
-    clone() {
-        return new CloudflareResponse(this.#body, {
-            status: this.status,
-            statusText: this.statusText,
-            headers: this.headers,
-            url: this.url,
-        });
-    }
-}
-/**
  * Cloudflare API 错误。
  * Cloudflare API error.
  */
@@ -289,7 +210,7 @@ class ZonesResource extends APIResource {
         // Keep the existing "query or options" call style without relying on extra helpers.
         const isOptions = typeof queryOrOptions === "object" &&
             queryOrOptions !== null &&
-            ["headers", "query", "timeout", "maxRetries", "fetch"].some(key => key in queryOrOptions);
+            ["headers", "query", "timeout", "maxRetries"].some(key => key in queryOrOptions);
         const query = isOptions ? {} : { ...(queryOrOptions ?? {}) };
         const requestOptions = isOptions ? queryOrOptions : options;
         return getAPIList(this._client, "/zones", ZonesV4PagePaginationArray, query, requestOptions);
@@ -766,7 +687,7 @@ class ValuesResource extends APIResource {
      * @param {string} keyName 键名 / Key name.
      * @param {ValueGetParams} params 路径参数 / Path params.
      * @param {RequestOptions} [options] 请求选项 / Request options.
-     * @returns {Promise<CloudflareResponse>}
+     * @returns {Promise<FetchResponse>}
      */
     get(namespaceId, keyName, params, options) {
         return getBinaryResponse(this._client, `/accounts/${encodeURIComponent(params.account_id)}/storage/kv/namespaces/${encodeURIComponent(namespaceId)}/values/${encodeURIComponent(keyName)}`, {
@@ -807,7 +728,7 @@ class ValuesResource extends APIResource {
  * const response = await client.kv.namespaces.values.get("namespace-id", "KEY", {
  * 	account_id: "account-id",
  * });
- * const value = await response.text();
+ * const value = typeof response.body === "string" ? response.body : "";
  * ```
  */
 export class Cloudflare {
@@ -819,7 +740,6 @@ export class Cloudflare {
     apiVersion;
     timeout;
     httpAgent;
-    fetch;
     maxRetries;
     defaultHeaders;
     defaultQuery;
@@ -843,7 +763,6 @@ export class Cloudflare {
         this.apiVersion = options.apiVersion ?? null;
         this.timeout = options.timeout ?? DEFAULT_TIMEOUT;
         this.httpAgent = options.httpAgent;
-        this.fetch = options.fetch;
         this.maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
         this.defaultHeaders = { ...(options.defaultHeaders ?? {}) };
         this.defaultQuery = { ...(options.defaultQuery ?? {}) };
@@ -879,13 +798,12 @@ export class Cloudflare {
         return await Cloudflare.#trace("https://[2606:4700:4700::1111]/cdn-cgi/trace", options);
     }
     static async #trace(url, options) {
-        const rawResponse = await (options?.fetch ?? utilFetch)(url, {
+        const rawResponse = await utilFetch(url, {
             method: "GET",
             timeout: options?.timeout ?? DEFAULT_TIMEOUT,
             headers: options?.headers,
         });
-        const response = await normalizeResponse(rawResponse, url);
-        const body = await response.text();
+        const body = getFetchResponseText(rawResponse);
         return Object.fromEntries(body
             .trim()
             .split("\n")
@@ -941,7 +859,7 @@ async function requestClient(client, method, path, options = {}) {
         case "binary":
             return response;
         default: {
-            const rawBody = await response.text();
+            const rawBody = getFetchResponseText(response);
             let body = null;
             switch (true) {
                 // 有响应体时优先按 JSON 解析，失败则保留原始文本。
@@ -1018,19 +936,18 @@ async function fetchResponse(client, method, path, options) {
         default:
             break;
     }
-    const fetcher = options.fetch ?? client.fetch ?? utilFetch;
     const timeout = options.timeout ?? client.timeout;
     const maxRetries = options.maxRetries ?? client.maxRetries;
     let attempt = 0;
     while (true) {
         try {
-            const rawResponse = await fetcher(url.toString(), {
+            const rawResponse = await utilFetch(url.toString(), {
                 method,
                 headers,
                 body: body,
                 timeout,
             });
-            const response = await normalizeResponse(rawResponse, url.toString());
+            const response = rawResponse;
             switch (true) {
                 // 命中可重试状态且未超过上限：指数退避后重试。
                 // Retry with exponential backoff for retryable status while attempts remain.
@@ -1124,7 +1041,7 @@ async function createError(response, body) {
         // 调用方未提供 payload 时，从响应体读取并尝试解析。
         // Read and parse response body only when payload is not provided by caller.
         case payload === undefined: {
-            const rawBody = await response.text();
+            const rawBody = getFetchResponseText(response);
             switch (true) {
                 // 非空响应体优先按 JSON 解析，失败则保留原始文本。
                 // Parse non-empty response text as JSON first; keep raw text on failure.
@@ -1166,34 +1083,15 @@ function readEnv(name) {
     const runtime = globalThis;
     return runtime.process?.env?.[name] ?? null;
 }
-async function normalizeResponse(rawResponse, url = "") {
+function getFetchResponseText(response) {
     switch (true) {
-        // 已是统一响应类型时直接返回。
-        // Return directly when response is already normalized.
-        case rawResponse instanceof CloudflareResponse:
-            return rawResponse;
-        // 标准 Web Response：读取二进制体并封装为 CloudflareResponse。
-        // Web Response: read binary body and wrap into CloudflareResponse.
-        case typeof rawResponse.arrayBuffer === "function": {
-            const response = rawResponse;
-            return new CloudflareResponse(await response.clone().arrayBuffer(), {
-                status: response.status,
-                statusText: response.statusText,
-                headers: response.headers,
-                url: response.url || url,
-            });
-        }
-        // 其余按 util FetchResponse 结构读取并封装。
-        // Otherwise map util FetchResponse shape into CloudflareResponse.
+        case typeof response.body === "string":
+            return response.body;
+        case response.bodyBytes instanceof ArrayBuffer:
+            return new TextDecoder().decode(response.bodyBytes);
+        case response.body instanceof ArrayBuffer:
+            return new TextDecoder().decode(response.body);
         default:
-            break;
+            return "";
     }
-    const response = rawResponse;
-    const body = response.bodyBytes ?? response.body ?? "";
-    return new CloudflareResponse(typeof body === "string" ? body : body, {
-        status: response.status ?? response.statusCode ?? 0,
-        statusText: response.statusText ?? "",
-        headers: response.headers,
-        url,
-    });
 }

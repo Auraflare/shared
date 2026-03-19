@@ -13,7 +13,6 @@ describe("public exports", () => {
 		assert.deepStrictEqual(Object.keys(cf).sort(), [
 			"Cloudflare",
 			"CloudflareAPIError",
-			"CloudflareResponse",
 			"default",
 		]);
 		assert.ok(!Object.hasOwn(cf, "DNSResource"));

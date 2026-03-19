@@ -4,13 +4,31 @@ import { describe, it } from "node:test";
 import Cloudflare from "../Cloudflare.mjs";
 import { KV } from "../KV.mjs";
 
+const textResponse = (body, init = {}) =>
+	new Response(body, {
+		status: init.status ?? 200,
+		statusText: init.statusText ?? "",
+		headers: init.headers,
+	});
+
 const jsonResponse = body =>
-	new Response(JSON.stringify(body), {
-		status: 200,
+	textResponse(JSON.stringify(body), {
 		headers: {
-			"Content-Type": "application/json",
+			"content-type": "application/json",
 		},
 	});
+
+const withMockFetch = async (handler, run) => {
+	const originalFetch = globalThis.fetch;
+	const mockFetch = async (url, options = {}) => await handler(url, options);
+	mockFetch.cookieJar = true;
+	globalThis.fetch = mockFetch;
+	try {
+		return await run();
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+};
 
 describe("KV", () => {
 	it("uses namespace binding for read/write/list", async () => {
@@ -55,9 +73,8 @@ describe("KV", () => {
 
 	it("uses Cloudflare REST backend when client/account/namespace are provided", async () => {
 		const calls = [];
-		const client = new Cloudflare({
-			apiToken: "token",
-			fetch: async (url, options = {}) => {
+		await withMockFetch(
+			async (url, options = {}) => {
 				const method = options.method ?? "GET";
 				const parsed = new URL(String(url));
 				calls.push({ method, url: parsed.toString() });
@@ -66,7 +83,7 @@ describe("KV", () => {
 					return jsonResponse({ success: true, result: null });
 				}
 				if (method === "GET" && parsed.pathname.endsWith("/values/plain")) {
-					return new Response("value", { status: 200 });
+					return textResponse("value");
 				}
 				if (method === "DELETE" && parsed.pathname.endsWith("/values/plain")) {
 					return jsonResponse({ success: true, result: null });
@@ -80,33 +97,35 @@ describe("KV", () => {
 				}
 				throw new Error(`unexpected request: ${method} ${parsed.toString()}`);
 			},
-		});
+			async () => {
+				const client = new Cloudflare({ apiToken: "token", timeout: 1 });
+				const kv = new KV({
+					client,
+					account_id: "account-id",
+					namespace_id: "namespace-id",
+				});
 
-		const kv = new KV({
-			client,
-			account_id: "account-id",
-			namespace_id: "namespace-id",
-		});
+				assert.strictEqual(await kv.setItem("plain", "value"), true);
+				assert.strictEqual(await kv.getItem("plain"), "value");
+				assert.strictEqual(await kv.removeItem("plain"), true);
+				assert.deepStrictEqual(await kv.list({ prefix: "pl", limit: 5, cursor: "next" }), {
+					keys: [{ name: "plain" }],
+					list_complete: true,
+					cursor: "",
+				});
 
-		assert.strictEqual(await kv.setItem("plain", "value"), true);
-		assert.strictEqual(await kv.getItem("plain"), "value");
-		assert.strictEqual(await kv.removeItem("plain"), true);
-		assert.deepStrictEqual(await kv.list({ prefix: "pl", limit: 5, cursor: "next" }), {
-			keys: [{ name: "plain" }],
-			list_complete: true,
-			cursor: "",
-		});
-
-		assert.strictEqual(calls[0].method, "PUT");
-		assert.strictEqual(
-			calls[0].url,
-			"https://api.cloudflare.com/client/v4/accounts/account-id/storage/kv/namespaces/namespace-id/values/plain",
-		);
-		assert.strictEqual(calls[1].method, "GET");
-		assert.strictEqual(calls[2].method, "DELETE");
-		assert.strictEqual(
-			calls[3].url,
-			"https://api.cloudflare.com/client/v4/accounts/account-id/storage/kv/namespaces/namespace-id/keys?prefix=pl&limit=5&cursor=next",
+				assert.strictEqual(calls[0].method, "PUT");
+				assert.strictEqual(
+					calls[0].url,
+					"https://api.cloudflare.com/client/v4/accounts/account-id/storage/kv/namespaces/namespace-id/values/plain",
+				);
+				assert.strictEqual(calls[1].method, "GET");
+				assert.strictEqual(calls[2].method, "DELETE");
+				assert.strictEqual(
+					calls[3].url,
+					"https://api.cloudflare.com/client/v4/accounts/account-id/storage/kv/namespaces/namespace-id/keys?prefix=pl&limit=5&cursor=next",
+				);
+			},
 		);
 	});
 

@@ -1,4 +1,5 @@
-import { type FetchRequest, type FetchResponse } from "@nsnanocat/util";
+import type { FetchResponse } from "@nsnanocat/util";
+
 /**
  * Cloudflare 请求头。
  * Cloudflare request headers.
@@ -21,11 +22,6 @@ interface QueryLike {
     [key: string]: QueryValue;
 }
 /**
- * Cloudflare 自定义 fetch。
- * Cloudflare custom fetch.
- */
-type FetchLike = (resource: string | FetchRequest, options?: Partial<FetchRequest>) => Promise<FetchResponse | Response | CloudflareResponse>;
-/**
  * 请求选项。
  * Request options.
  */
@@ -34,7 +30,6 @@ export interface RequestOptions {
     query?: QueryLike;
     timeout?: number;
     maxRetries?: number;
-    fetch?: FetchLike;
 }
 /**
  * Cloudflare 客户端选项。
@@ -49,7 +44,6 @@ export interface ClientOptions {
     apiVersion?: string | null | undefined;
     timeout?: number | undefined;
     httpAgent?: unknown;
-    fetch?: FetchLike | undefined;
     maxRetries?: number | undefined;
     defaultHeaders?: HeadersLike | undefined;
     defaultQuery?: QueryLike | undefined;
@@ -95,66 +89,6 @@ interface V4PagePaginationArrayParams {
 interface CursorPaginationAfterParams {
     cursor?: string;
     limit?: number;
-}
-/**
- * Web Response 兼容响应。
- * Web Response compatible response.
- */
-export declare class CloudflareResponse {
-    #private;
-    readonly ok: boolean;
-    readonly status: number;
-    readonly statusText: string;
-    readonly headers: Headers;
-    readonly url: string;
-    /**
-     * 创建响应对象。
-     * Create a response object.
-     *
-     * @param {string | ArrayBuffer} body 响应体 / Response body.
-     * @param {{ status?: number; statusText?: string; headers?: HeadersInit; url?: string }} [init={}] 初始化信息 / Response init.
-     */
-    constructor(body: string | ArrayBuffer, init?: {
-        status?: number;
-        statusText?: string;
-        headers?: HeadersInit | HeadersLike;
-        url?: string;
-    });
-    /**
-     * 读取文本响应体。
-     * Read the response body as text.
-     *
-     * @returns {Promise<string>}
-     */
-    text(): Promise<string>;
-    /**
-     * 读取 JSON 响应体。
-     * Read the response body as JSON.
-     *
-     * @returns {Promise<unknown>}
-     */
-    json(): Promise<unknown>;
-    /**
-     * 读取 ArrayBuffer 响应体。
-     * Read the response body as ArrayBuffer.
-     *
-     * @returns {Promise<ArrayBuffer>}
-     */
-    arrayBuffer(): Promise<ArrayBuffer>;
-    /**
-     * 读取 Blob 响应体。
-     * Read the response body as Blob.
-     *
-     * @returns {Promise<Blob>}
-     */
-    blob(): Promise<Blob>;
-    /**
-     * 克隆响应。
-     * Clone the response.
-     *
-     * @returns {CloudflareResponse}
-     */
-    clone(): CloudflareResponse;
 }
 /**
  * Cloudflare API 错误。
@@ -1203,9 +1137,9 @@ declare class ValuesResource extends APIResource {
      * @param {string} keyName 键名 / Key name.
      * @param {ValueGetParams} params 路径参数 / Path params.
      * @param {RequestOptions} [options] 请求选项 / Request options.
-     * @returns {Promise<CloudflareResponse>}
+     * @returns {Promise<FetchResponse>}
      */
-    get(namespaceId: string, keyName: string, params: ValueGetParams, options?: RequestOptions): Promise<CloudflareResponse>;
+    get(namespaceId: string, keyName: string, params: ValueGetParams, options?: RequestOptions): Promise<FetchResponse>;
     /**
      * 删除 KV 值。
      * Delete a KV value.
@@ -1234,7 +1168,7 @@ declare class ValuesResource extends APIResource {
  * const response = await client.kv.namespaces.values.get("namespace-id", "KEY", {
  * 	account_id: "account-id",
  * });
- * const value = await response.text();
+ * const value = typeof response.body === "string" ? response.body : "";
  * ```
  */
 export declare class Cloudflare {
@@ -1247,7 +1181,6 @@ export declare class Cloudflare {
     readonly apiVersion: string | null;
     readonly timeout: number;
     readonly httpAgent?: unknown;
-    readonly fetch?: FetchLike;
     readonly maxRetries: number;
     readonly defaultHeaders: HeadersLike;
     readonly defaultQuery: QueryLike;
