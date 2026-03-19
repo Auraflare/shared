@@ -1,4 +1,4 @@
-import type { FetchResponse } from "@nsnanocat/util";
+import type { FetchRequest, FetchResponse } from "@nsnanocat/util";
 
 /**
  * Cloudflare 请求头。
@@ -30,6 +30,27 @@ export interface RequestOptions {
     query?: QueryLike;
     timeout?: number;
     maxRetries?: number;
+}
+/**
+ * Cloudflare 静态请求行为选项。
+ * Cloudflare static request behavior options.
+ */
+interface CloudflareFetchOptions {
+    /**
+     * 最大重试次数（覆盖客户端默认值）。
+     * Max retry count (overrides client default).
+     */
+    maxRetries?: number;
+    /**
+     * 响应类型，`binary` 时返回原始 `FetchResponse`。
+     * Response type; `binary` returns raw `FetchResponse`.
+     */
+    responseType?: "json" | "binary";
+    /**
+     * 是否根据 `messages/errors` 发送通知。
+     * Whether to emit notifications from `messages/errors`.
+     */
+    notify?: boolean;
 }
 /**
  * Cloudflare 客户端选项。
@@ -110,65 +131,6 @@ export declare class CloudflareAPIError extends Error {
         errors?: CloudflareAPIErrorEntry[];
         body?: unknown;
     });
-}
-declare class AbstractPage<TItem> implements AsyncIterable<TItem> {
-    readonly result: TItem[];
-    readonly result_info: CloudflareResultInfo;
-    protected readonly _client: Cloudflare;
-    protected readonly _path: string;
-    protected readonly _query: QueryLike;
-    protected readonly _options?: RequestOptions;
-    constructor(init: {
-        client: Cloudflare;
-        path: string;
-        query: QueryLike;
-        options?: RequestOptions;
-        result: TItem[];
-        result_info: CloudflareResultInfo;
-    });
-    hasNextPage(): boolean;
-    [Symbol.asyncIterator](): AsyncGenerator<TItem>;
-    getNextPage(): Promise<this>;
-    protected getNextQuery(): QueryLike | null;
-}
-/**
- * V4 分页数组结果。
- * V4 page array result.
- *
- * @template TItem 条目类型 / Item type.
- */
-declare class V4PagePaginationArray<TItem> extends AbstractPage<TItem> {
-    protected getNextQuery(): QueryLike | null;
-}
-/**
- * Cursor 分页结果。
- * Cursor pagination result.
- *
- * @template TItem 条目类型 / Item type.
- */
-declare class CursorPaginationAfter<TItem> extends AbstractPage<TItem> {
-    protected getNextQuery(): QueryLike | null;
-}
-/**
- * 单页结果。
- * Single page result.
- *
- * @template TItem 条目类型 / Item type.
- */
-declare class SinglePage<TItem> extends AbstractPage<TItem> {
-}
-/**
- * 分页 Promise。
- * Pagination promise.
- *
- * @template TPage 分页类型 / Page type.
- * @template TItem 条目类型 / Item type.
- */
-declare class PagePromise<TPage extends AbstractPage<TItem>, TItem = unknown> implements PromiseLike<TPage>, AsyncIterable<TItem> {
-    #private;
-    constructor(factory: () => Promise<TPage>);
-    then<TResult1 = TPage, TResult2 = never>(onfulfilled?: ((value: TPage) => TResult1 | PromiseLike<TResult1>) | null, onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null): PromiseLike<TResult1 | TResult2>;
-    [Symbol.asyncIterator](): AsyncGenerator<TItem>;
 }
 /**
  * 用户信息。
@@ -735,36 +697,6 @@ interface ValueDeleteParams {
  */
 interface ValueDeleteResponse {
 }
-/**
- * Zone 分页结果。
- * Zone pagination result.
- */
-declare class ZonesV4PagePaginationArray extends V4PagePaginationArray<Zone> {
-}
-/**
- * DNS 记录分页结果。
- * DNS record pagination result.
- */
-declare class RecordResponsesV4PagePaginationArray extends V4PagePaginationArray<RecordResponse> {
-}
-/**
- * DNS 记录单页结果。
- * DNS record single page result.
- */
-declare class RecordResponsesSinglePage extends SinglePage<RecordResponse> {
-}
-/**
- * Namespace 分页结果。
- * Namespace pagination result.
- */
-declare class NamespacesV4PagePaginationArray extends V4PagePaginationArray<Namespace> {
-}
-/**
- * KV 键 Cursor 分页结果。
- * KV key cursor pagination result.
- */
-declare class KeysCursorPaginationAfter extends CursorPaginationAfter<Key> {
-}
 declare class APIResource {
     protected readonly _client: Cloudflare;
     constructor(client: Cloudflare);
@@ -809,9 +741,9 @@ declare class ZonesResource extends APIResource {
      *
      * @param {ZoneListParams | RequestOptions} [queryOrOptions] 查询参数或请求选项 / Query params or request options.
      * @param {RequestOptions} [options] 请求选项 / Request options.
-     * @returns {PagePromise<ZonesV4PagePaginationArray, Zone>}
+     * @returns {Promise<Zone[]>}
      */
-    list(queryOrOptions?: ZoneListParams | RequestOptions, options?: RequestOptions): PagePromise<ZonesV4PagePaginationArray, Zone>;
+    list(queryOrOptions?: ZoneListParams | RequestOptions, options?: RequestOptions): Promise<Zone[]>;
     /**
      * 获取 Zone。
      * Get a zone.
@@ -859,9 +791,9 @@ declare class DNSRecordsResource extends APIResource {
      *
      * @param {RecordListParams} params 查询参数 / Query params.
      * @param {RequestOptions} [options] 请求选项 / Request options.
-     * @returns {PagePromise<RecordResponsesV4PagePaginationArray, RecordResponse>}
+     * @returns {Promise<RecordResponse[]>}
      */
-    list(params: RecordListParams, options?: RequestOptions): PagePromise<RecordResponsesV4PagePaginationArray, RecordResponse>;
+    list(params: RecordListParams, options?: RequestOptions): Promise<RecordResponse[]>;
     /**
      * 删除 DNS 记录。
      * Delete a DNS record.
@@ -934,9 +866,9 @@ declare class DNSRecordsResource extends APIResource {
      *
      * @param {RecordScanListParams} params 路径参数 / Path params.
      * @param {RequestOptions} [options] 请求选项 / Request options.
-     * @returns {PagePromise<RecordResponsesSinglePage, RecordResponse>}
+     * @returns {Promise<RecordResponse[]>}
      */
-    scanList(params: RecordScanListParams, options?: RequestOptions): PagePromise<RecordResponsesSinglePage, RecordResponse>;
+    scanList(params: RecordScanListParams, options?: RequestOptions): Promise<RecordResponse[]>;
     /**
      * 接受或拒绝扫描出的 DNS 记录。
      * Accept or reject scanned DNS records.
@@ -996,9 +928,9 @@ declare class NamespacesResource extends APIResource {
      *
      * @param {NamespaceListParams} params 查询参数 / Query params.
      * @param {RequestOptions} [options] 请求选项 / Request options.
-     * @returns {PagePromise<NamespacesV4PagePaginationArray, Namespace>}
+     * @returns {Promise<Namespace[]>}
      */
-    list(params: NamespaceListParams, options?: RequestOptions): PagePromise<NamespacesV4PagePaginationArray, Namespace>;
+    list(params: NamespaceListParams, options?: RequestOptions): Promise<Namespace[]>;
     /**
      * 删除 Namespace。
      * Delete a namespace.
@@ -1062,9 +994,9 @@ declare class KeysResource extends APIResource {
      * @param {string} namespaceId Namespace ID / Namespace ID.
      * @param {KeyListParams} params 查询参数 / Query params.
      * @param {RequestOptions} [options] 请求选项 / Request options.
-     * @returns {PagePromise<KeysCursorPaginationAfter, Key>}
+     * @returns {Promise<Key[]>}
      */
-    list(namespaceId: string, params: KeyListParams, options?: RequestOptions): PagePromise<KeysCursorPaginationAfter, Key>;
+    list(namespaceId: string, params: KeyListParams, options?: RequestOptions): Promise<Key[]>;
     /**
      * 批量删除 KV 键。
      * Bulk delete KV keys.
@@ -1168,7 +1100,7 @@ declare class ValuesResource extends APIResource {
  * const response = await client.kv.namespaces.values.get("namespace-id", "KEY", {
  * 	account_id: "account-id",
  * });
- * const value = typeof response.body === "string" ? response.body : "";
+ * const value = response.body ?? "";
  * ```
  */
 export declare class Cloudflare {
@@ -1195,6 +1127,16 @@ export declare class Cloudflare {
      * @param {ClientOptions} [options={}] 客户端选项 / Client options.
      */
     constructor(options?: ClientOptions);
+    /**
+     * 执行 Cloudflare API 请求（默认解析 JSON，并统一处理错误与通知）。
+     * Execute a Cloudflare API request (JSON-first with unified error/notification handling).
+     *
+     * @template Result 返回结果类型 / Result type.
+     * @param {FetchRequest} request 请求对象 / Request object.
+     * @param {CloudflareFetchOptions} [options={}] 请求行为选项 / Request behavior options.
+     * @returns {Promise<Result | FetchResponse>} 解析结果或原始响应 / Parsed result or raw response.
+     */
+    static fetch<Result = unknown>(request: FetchRequest, options?: CloudflareFetchOptions): Promise<Result | FetchResponse>;
     /**
      * 追踪默认线路。
      * Trace the default route.

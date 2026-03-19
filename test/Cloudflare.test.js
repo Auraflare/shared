@@ -70,10 +70,9 @@ describe("Cloudflare smoke", () => {
 				const record = await client.dns.records.get("record-1", { zone_id: "zone-id" });
 				assert.strictEqual(record.id, "record-1");
 
-				const page = await client.dns.records.list({ zone_id: "zone-id" });
-				assert.strictEqual(page.result.length, 1);
-				assert.strictEqual(page.result[0].id, "record-1");
-				assert.strictEqual(page.hasNextPage(), false);
+				const records = await client.dns.records.list({ zone_id: "zone-id" });
+				assert.strictEqual(records.length, 1);
+				assert.strictEqual(records[0].id, "record-1");
 
 				const updated = await client.dns.records.update(
 					"record-1",
@@ -182,9 +181,8 @@ describe("Cloudflare smoke", () => {
 				});
 				assert.strictEqual(scanned.total_records_parsed, 1);
 
-				const scannedPage = await client.dns.records.scanList({ zone_id: "zone-id" });
-				assert.strictEqual(scannedPage.result.length, 1);
-				assert.strictEqual(scannedPage.hasNextPage(), false);
+				const scannedRecords = await client.dns.records.scanList({ zone_id: "zone-id" });
+				assert.strictEqual(scannedRecords.length, 1);
 
 				const reviewed = await client.dns.records.scanReview({
 					zone_id: "zone-id",
@@ -267,10 +265,10 @@ describe("Cloudflare smoke", () => {
 				});
 				assert.strictEqual(updated.title, "title-2");
 
-				const namespacesPage = await client.kv.namespaces.list({
+				const namespaces = await client.kv.namespaces.list({
 					account_id: "account-id",
 				});
-				assert.strictEqual(namespacesPage.result[0].id, "namespace-id");
+				assert.strictEqual(namespaces[0].id, "namespace-id");
 
 				const namespace = await client.kv.namespaces.get("namespace-id", {
 					account_id: "account-id",
@@ -295,10 +293,10 @@ describe("Cloudflare smoke", () => {
 				});
 				assert.strictEqual(namespaceBulkUpdate.successful_key_count, 1);
 
-				const keysPage = await client.kv.namespaces.keys.list("namespace-id", {
+				const keys = await client.kv.namespaces.keys.list("namespace-id", {
 					account_id: "account-id",
 				});
-				assert.strictEqual(keysPage.result[0].name, "key-1");
+				assert.strictEqual(keys[0].name, "key-1");
 
 				const keyBulkDelete = await client.kv.namespaces.keys.bulkDelete("namespace-id", {
 					account_id: "account-id",

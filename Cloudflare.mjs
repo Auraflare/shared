@@ -1,8 +1,17 @@
-import { fetch as utilFetch } from "@nsnanocat/util";
+import { fetch as utilFetch, notification } from "@nsnanocat/util";
 const DEFAULT_BASE_URL = "https://api.cloudflare.com/client/v4";
 const DEFAULT_TIMEOUT = 60_000;
 const DEFAULT_MAX_RETRIES = 2;
 const RETRYABLE_STATUS_CODES = new Set([408, 409, 429]);
+/**
+ * Cloudflare 静态请求行为选项。
+ * Cloudflare static request behavior options.
+ *
+ * @typedef {object} CloudflareFetchOptions
+ * @property {number} [maxRetries] 最大重试次数（覆盖客户端默认值） / Max retry count (overrides client default).
+ * @property {"json" | "binary"} [responseType] 响应类型，`binary` 时返回原始 `FetchResponse` / Response type; `binary` returns raw `FetchResponse`.
+ * @property {boolean} [notify] 是否根据 `messages/errors` 发送通知 / Whether to emit notifications from `messages/errors`.
+ */
 /**
  * Cloudflare API 错误。
  * Cloudflare API error.
@@ -25,134 +34,6 @@ export class CloudflareAPIError extends Error {
         this.errors = init.errors;
         this.body = init.body;
     }
-}
-class AbstractPage {
-    result;
-    result_info;
-    _client;
-    _path;
-    _query;
-    _options;
-    constructor(init) {
-        this._client = init.client;
-        this._path = init.path;
-        this._query = { ...init.query };
-        this._options = init.options;
-        this.result = init.result;
-        this.result_info = init.result_info;
-    }
-    hasNextPage() {
-        return Boolean(this.getNextQuery());
-    }
-    async *[Symbol.asyncIterator]() {
-        let page = this;
-        while (true) {
-            for (const item of page.result)
-                yield item;
-            if (!page.hasNextPage())
-                break;
-            page = await page.getNextPage();
-        }
-    }
-    async getNextPage() {
-        const nextQuery = this.getNextQuery();
-        if (!nextQuery)
-            return this;
-        return (await getAPIPage(this._client, this.constructor, this._path, nextQuery, this._options));
-    }
-    getNextQuery() {
-        return null;
-    }
-}
-/**
- * V4 分页数组结果。
- * V4 page array result.
- *
- * @template TItem 条目类型 / Item type.
- */
-class V4PagePaginationArray extends AbstractPage {
-    getNextQuery() {
-        const page = Number(this.result_info.page ?? this._query.page ?? 1);
-        const totalPages = Number(this.result_info.total_pages ?? 0);
-        if (!totalPages || page >= totalPages)
-            return null;
-        return { ...this._query, page: page + 1 };
-    }
-}
-/**
- * Cursor 分页结果。
- * Cursor pagination result.
- *
- * @template TItem 条目类型 / Item type.
- */
-class CursorPaginationAfter extends AbstractPage {
-    getNextQuery() {
-        const cursor = this.result_info.cursor ?? this.result_info.cursors?.after;
-        return cursor ? { ...this._query, cursor } : null;
-    }
-}
-/**
- * 单页结果。
- * Single page result.
- *
- * @template TItem 条目类型 / Item type.
- */
-class SinglePage extends AbstractPage {
-}
-/**
- * 分页 Promise。
- * Pagination promise.
- *
- * @template TPage 分页类型 / Page type.
- * @template TItem 条目类型 / Item type.
- */
-class PagePromise {
-    #factory;
-    #promise;
-    constructor(factory) {
-        this.#factory = factory;
-    }
-    then(onfulfilled, onrejected) {
-        return this.#getPromise().then(onfulfilled, onrejected);
-    }
-    async *[Symbol.asyncIterator]() {
-        const page = await this.#getPromise();
-        yield* page;
-    }
-    #getPromise() {
-        this.#promise ??= this.#factory();
-        return this.#promise;
-    }
-}
-/**
- * Zone 分页结果。
- * Zone pagination result.
- */
-class ZonesV4PagePaginationArray extends V4PagePaginationArray {
-}
-/**
- * DNS 记录分页结果。
- * DNS record pagination result.
- */
-class RecordResponsesV4PagePaginationArray extends V4PagePaginationArray {
-}
-/**
- * DNS 记录单页结果。
- * DNS record single page result.
- */
-class RecordResponsesSinglePage extends SinglePage {
-}
-/**
- * Namespace 分页结果。
- * Namespace pagination result.
- */
-class NamespacesV4PagePaginationArray extends V4PagePaginationArray {
-}
-/**
- * KV 键 Cursor 分页结果。
- * KV key cursor pagination result.
- */
-class KeysCursorPaginationAfter extends CursorPaginationAfter {
 }
 class APIResource {
     _client;
@@ -204,7 +85,7 @@ class ZonesResource extends APIResource {
      *
      * @param {ZoneListParams | RequestOptions} [queryOrOptions] 查询参数或请求选项 / Query params or request options.
      * @param {RequestOptions} [options] 请求选项 / Request options.
-     * @returns {PagePromise<ZonesV4PagePaginationArray, Zone>}
+     * @returns {Promise<Zone[]>}
      */
     list(queryOrOptions, options) {
         // Keep the existing "query or options" call style without relying on extra helpers.
@@ -213,7 +94,13 @@ class ZonesResource extends APIResource {
             ["headers", "query", "timeout", "maxRetries"].some(key => key in queryOrOptions);
         const query = isOptions ? {} : { ...(queryOrOptions ?? {}) };
         const requestOptions = isOptions ? queryOrOptions : options;
-        return getAPIList(this._client, "/zones", ZonesV4PagePaginationArray, query, requestOptions);
+        return getResult(this._client, "/zones", {
+            ...requestOptions,
+            query: {
+                ...(requestOptions?.query ?? {}),
+                ...query,
+            },
+        });
     }
     /**
      * 获取 Zone。
@@ -276,11 +163,17 @@ class DNSRecordsResource extends APIResource {
      *
      * @param {RecordListParams} params 查询参数 / Query params.
      * @param {RequestOptions} [options] 请求选项 / Request options.
-     * @returns {PagePromise<RecordResponsesV4PagePaginationArray, RecordResponse>}
+     * @returns {Promise<RecordResponse[]>}
      */
     list(params, options) {
         const { zone_id, ...query } = params;
-        return getAPIList(this._client, `/zones/${encodeURIComponent(zone_id)}/dns_records`, RecordResponsesV4PagePaginationArray, query, options);
+        return getResult(this._client, `/zones/${encodeURIComponent(zone_id)}/dns_records`, {
+            ...options,
+            query: {
+                ...(options?.query ?? {}),
+                ...query,
+            },
+        });
     }
     /**
      * 删除 DNS 记录。
@@ -394,10 +287,10 @@ class DNSRecordsResource extends APIResource {
      *
      * @param {RecordScanListParams} params 路径参数 / Path params.
      * @param {RequestOptions} [options] 请求选项 / Request options.
-     * @returns {PagePromise<RecordResponsesSinglePage, RecordResponse>}
+     * @returns {Promise<RecordResponse[]>}
      */
     scanList(params, options) {
-        return getAPIList(this._client, `/zones/${encodeURIComponent(params.zone_id)}/dns_records/scan/review`, RecordResponsesSinglePage, {}, options);
+        return getResult(this._client, `/zones/${encodeURIComponent(params.zone_id)}/dns_records/scan/review`, options);
     }
     /**
      * 接受或拒绝扫描出的 DNS 记录。
@@ -478,11 +371,17 @@ class NamespacesResource extends APIResource {
      *
      * @param {NamespaceListParams} params 查询参数 / Query params.
      * @param {RequestOptions} [options] 请求选项 / Request options.
-     * @returns {PagePromise<NamespacesV4PagePaginationArray, Namespace>}
+     * @returns {Promise<Namespace[]>}
      */
     list(params, options) {
         const { account_id, ...query } = params;
-        return getAPIList(this._client, `/accounts/${encodeURIComponent(account_id)}/storage/kv/namespaces`, NamespacesV4PagePaginationArray, query, options);
+        return getResult(this._client, `/accounts/${encodeURIComponent(account_id)}/storage/kv/namespaces`, {
+            ...options,
+            query: {
+                ...(options?.query ?? {}),
+                ...query,
+            },
+        });
     }
     /**
      * 删除 Namespace。
@@ -567,11 +466,17 @@ class KeysResource extends APIResource {
      * @param {string} namespaceId Namespace ID / Namespace ID.
      * @param {KeyListParams} params 查询参数 / Query params.
      * @param {RequestOptions} [options] 请求选项 / Request options.
-     * @returns {PagePromise<KeysCursorPaginationAfter, Key>}
+     * @returns {Promise<Key[]>}
      */
     list(namespaceId, params, options) {
         const { account_id, ...query } = params;
-        return getAPIList(this._client, `/accounts/${encodeURIComponent(account_id)}/storage/kv/namespaces/${encodeURIComponent(namespaceId)}/keys`, KeysCursorPaginationAfter, query, options);
+        return getResult(this._client, `/accounts/${encodeURIComponent(account_id)}/storage/kv/namespaces/${encodeURIComponent(namespaceId)}/keys`, {
+            ...options,
+            query: {
+                ...(options?.query ?? {}),
+                ...query,
+            },
+        });
     }
     /**
      * 批量删除 KV 键。
@@ -728,7 +633,7 @@ class ValuesResource extends APIResource {
  * const response = await client.kv.namespaces.values.get("namespace-id", "KEY", {
  * 	account_id: "account-id",
  * });
- * const value = typeof response.body === "string" ? response.body : "";
+ * const value = response.body ?? "";
  * ```
  */
 export class Cloudflare {
@@ -768,11 +673,70 @@ export class Cloudflare {
         this.defaultQuery = { ...(options.defaultQuery ?? {}) };
     }
     /**
+     * 执行 Cloudflare API 请求（默认解析 JSON，并统一处理错误与通知）。
+     * Execute a Cloudflare API request (JSON-first with unified error/notification handling).
+     *
+     * @template Result 返回结果类型 / Result type.
+     * @param {FetchRequest} request 请求对象 / Request object.
+     * @param {CloudflareFetchOptions} [options={}] 请求行为选项 / Request behavior options.
+     * @returns {Promise<Result | FetchResponse>} 解析结果或原始响应 / Parsed result or raw response.
+     */
+    static async fetch(request, options = {}) {
+        const maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
+        let attempt = 0;
+        while (true) {
+            try {
+                const response = await utilFetch(request);
+                switch (true) {
+                    // 命中可重试状态且未超过上限：指数退避后重试。
+                    // Retry with exponential backoff for retryable status while attempts remain.
+                    case attempt < maxRetries && (RETRYABLE_STATUS_CODES.has(response.status) || response.status >= 500):
+                        await new Promise(resolve => setTimeout(resolve, 200 * 2 ** attempt));
+                        attempt += 1;
+                        continue;
+                    default:
+                        break;
+                }
+                switch (options.responseType) {
+                    case "binary":
+                        if (!response.ok)
+                            throw await createError(response);
+                        return response;
+                    default: {
+                        const body = parseResponseBody(response);
+                        const envelope = toCloudflareEnvelope(body);
+                        if (options.notify !== false && envelope)
+                            notifyEnvelope(envelope);
+                        if (!response.ok || envelope?.success === false)
+                            throw await createError(response, envelope ?? body);
+                        if (envelope)
+                            return (envelope.result ?? null);
+                        return body;
+                    }
+                }
+            }
+            catch (error) {
+                switch (true) {
+                    // 已达到重试上限，抛出最后一次错误。
+                    // Throw the last error once retry budget is exhausted.
+                    case attempt >= maxRetries:
+                        throw error;
+                    // 仍可重试时先退避，再进行下一次请求。
+                    // Back off and retry when retry budget is still available.
+                    default:
+                        await new Promise(resolve => setTimeout(resolve, 200 * 2 ** attempt));
+                        attempt += 1;
+                        break;
+                }
+            }
+        }
+    }
+    /**
      * 追踪默认线路。
      * Trace the default route.
      *
      * @param {RequestOptions} [options] 请求选项 / Request options.
-     * @returns {Promise<Record<string, string>>}
+     * @returns {Promise<Record<string, string>>} 追踪结果对象 / Trace result map.
      */
     static async trace(options) {
         return await Cloudflare.#trace("https://cloudflare.com/cdn-cgi/trace", options);
@@ -782,7 +746,7 @@ export class Cloudflare {
      * Trace the IPv4 route.
      *
      * @param {RequestOptions} [options] 请求选项 / Request options.
-     * @returns {Promise<Record<string, string>>}
+     * @returns {Promise<Record<string, string>>} 追踪结果对象 / Trace result map.
      */
     static async trace4(options) {
         return await Cloudflare.#trace("https://162.159.36.1/cdn-cgi/trace", options);
@@ -792,18 +756,26 @@ export class Cloudflare {
      * Trace the IPv6 route.
      *
      * @param {RequestOptions} [options] 请求选项 / Request options.
-     * @returns {Promise<Record<string, string>>}
+     * @returns {Promise<Record<string, string>>} 追踪结果对象 / Trace result map.
      */
     static async trace6(options) {
         return await Cloudflare.#trace("https://[2606:4700:4700::1111]/cdn-cgi/trace", options);
     }
+    /**
+     * 访问 Cloudflare Trace 端点并解析键值结果。
+     * Request Cloudflare trace endpoint and parse key-value output.
+     *
+     * @param {string} url 请求地址 / Request URL.
+     * @param {RequestOptions} [options] 请求选项 / Request options.
+     * @returns {Promise<Record<string, string>>} 追踪结果对象 / Trace result map.
+     */
     static async #trace(url, options) {
         const rawResponse = await utilFetch(url, {
             method: "GET",
             timeout: options?.timeout ?? DEFAULT_TIMEOUT,
             headers: options?.headers,
         });
-        const body = typeof rawResponse.body === "string" ? rawResponse.body : "";
+        const body = rawResponse.body ?? "";
         return Object.fromEntries(body
             .trim()
             .split("\n")
@@ -812,91 +784,115 @@ export class Cloudflare {
     }
 }
 export default Cloudflare;
-function getAPIList(client, path, pageClass, query = {}, options) {
-    return new PagePromise(async () => await getAPIPage(client, pageClass, path, query, options));
-}
-async function getAPIPage(client, pageClass, path, query = {}, options) {
-    const envelope = await requestClient(client, "GET", path, {
-        ...options,
-        query,
-        unwrapResult: false,
-    });
-    return new pageClass({
-        client,
-        path,
-        query,
-        options,
-        result: Array.isArray(envelope.result) ? envelope.result : [],
-        result_info: envelope.result_info ?? {},
-    });
-}
+/**
+ * 发送 GET 并返回解析后的结果。
+ * Send GET and return parsed result.
+ *
+ * @template Result 返回类型 / Result type.
+ * @param {Cloudflare} client 客户端实例 / Client instance.
+ * @param {string} path API 路径 / API path.
+ * @param {RequestOptions} [options] 请求选项 / Request options.
+ * @returns {Promise<Result>} 解析后的结果 / Parsed result.
+ */
 async function getResult(client, path, options) {
     return await requestClient(client, "GET", path, options);
 }
+/**
+ * 发送 POST 并返回解析后的结果。
+ * Send POST and return parsed result.
+ *
+ * @template Result 返回类型 / Result type.
+ * @param {Cloudflare} client 客户端实例 / Client instance.
+ * @param {string} path API 路径 / API path.
+ * @param {RequestOptions & { body?: unknown }} [options] 请求选项 / Request options.
+ * @returns {Promise<Result>} 解析后的结果 / Parsed result.
+ */
 async function postResult(client, path, options) {
     return await requestClient(client, "POST", path, options);
 }
+/**
+ * 发送 PUT 并返回解析后的结果。
+ * Send PUT and return parsed result.
+ *
+ * @template Result 返回类型 / Result type.
+ * @param {Cloudflare} client 客户端实例 / Client instance.
+ * @param {string} path API 路径 / API path.
+ * @param {RequestOptions & { body?: unknown }} [options] 请求选项 / Request options.
+ * @returns {Promise<Result>} 解析后的结果 / Parsed result.
+ */
 async function putResult(client, path, options) {
     return await requestClient(client, "PUT", path, options);
 }
+/**
+ * 发送 PATCH 并返回解析后的结果。
+ * Send PATCH and return parsed result.
+ *
+ * @template Result 返回类型 / Result type.
+ * @param {Cloudflare} client 客户端实例 / Client instance.
+ * @param {string} path API 路径 / API path.
+ * @param {RequestOptions & { body?: unknown }} [options] 请求选项 / Request options.
+ * @returns {Promise<Result>} 解析后的结果 / Parsed result.
+ */
 async function patchResult(client, path, options) {
     return await requestClient(client, "PATCH", path, options);
 }
+/**
+ * 发送 DELETE 并返回解析后的结果。
+ * Send DELETE and return parsed result.
+ *
+ * @template Result 返回类型 / Result type.
+ * @param {Cloudflare} client 客户端实例 / Client instance.
+ * @param {string} path API 路径 / API path.
+ * @param {RequestOptions} [options] 请求选项 / Request options.
+ * @returns {Promise<Result>} 解析后的结果 / Parsed result.
+ */
 async function deleteResult(client, path, options) {
     return await requestClient(client, "DELETE", path, options);
 }
+/**
+ * 发送二进制 GET 并返回原始响应对象。
+ * Send binary GET and return raw response object.
+ *
+ * @param {Cloudflare} client 客户端实例 / Client instance.
+ * @param {string} path API 路径 / API path.
+ * @param {RequestOptions} [options] 请求选项 / Request options.
+ * @returns {Promise<FetchResponse>} 原始响应 / Raw response.
+ */
 async function getBinaryResponse(client, path, options) {
     return await requestClient(client, "GET", path, {
         ...options,
         responseType: "binary",
     });
 }
+/**
+ * 构建请求并调用 `Cloudflare.fetch` 统一处理返回。
+ * Build request and delegate to `Cloudflare.fetch` for unified handling.
+ *
+ * @template Result 返回类型 / Result type.
+ * @param {Cloudflare} client 客户端实例 / Client instance.
+ * @param {string} method HTTP 方法 / HTTP method.
+ * @param {string} path API 路径 / API path.
+ * @param {RequestOptions & { body?: unknown; responseType?: "json" | "binary"; }} [options={}] 请求选项 / Request options.
+ * @returns {Promise<Result>} 解析后的结果 / Parsed result.
+ */
 async function requestClient(client, method, path, options = {}) {
-    const response = await fetchResponse(client, method, path, options);
-    if (!response.ok)
-        throw await createError(response);
-    switch (options.responseType) {
-        case "binary":
-            return response;
-        default: {
-            const rawBody = typeof response.body === "string" ? response.body : "";
-            let body = null;
-            switch (true) {
-                // 有响应体时优先按 JSON 解析，失败则保留原始文本。
-                // When body text exists, parse JSON first and fall back to raw text.
-                case Boolean(rawBody):
-                    try {
-                        body = JSON.parse(rawBody);
-                    }
-                    catch (error) {
-                        body = rawBody;
-                    }
-                    break;
-                // 空响应体保持为 null。
-                // Keep null when response body is empty.
-                default:
-                    break;
-            }
-            // V4 APIs usually return envelopes: { success, result, errors, ... }.
-            switch (true) {
-                // 命中 Cloudflare V4 包裹结构时，处理 success/error 并按配置解包 result。
-                // For Cloudflare V4 envelopes, handle success/error and unwrap result when needed.
-                case typeof body === "object" && body !== null && ("success" in body || "result" in body || "errors" in body): {
-                    const envelope = body;
-                    if (envelope.success === false)
-                        throw await createError(response, envelope);
-                    return (options.unwrapResult === false ? envelope : (envelope.result ?? null));
-                }
-                // 非包裹结构直接返回原值。
-                // Return raw payload directly when it is not an envelope.
-                default:
-                    break;
-            }
-            return body;
-        }
-    }
+    const request = createFetchRequest(client, method, path, options);
+    return await Cloudflare.fetch(request, {
+        maxRetries: options.maxRetries ?? client.maxRetries,
+        responseType: options.responseType,
+    });
 }
-async function fetchResponse(client, method, path, options) {
+/**
+ * 把客户端配置和本次参数合并为 util.fetch 请求对象。
+ * Merge client config and request params into a util.fetch request object.
+ *
+ * @param {Cloudflare} client 客户端实例 / Client instance.
+ * @param {string} method HTTP 方法 / HTTP method.
+ * @param {string} path API 路径 / API path.
+ * @param {RequestOptions & { body?: unknown }} options 请求选项 / Request options.
+ * @returns {FetchRequest} util.fetch 请求对象 / util.fetch request object.
+ */
+function createFetchRequest(client, method, path, options) {
     const url = createURL(client, path, options.query);
     const headers = {
         ...client.defaultHeaders,
@@ -936,49 +932,23 @@ async function fetchResponse(client, method, path, options) {
         default:
             break;
     }
-    const timeout = options.timeout ?? client.timeout;
-    const maxRetries = options.maxRetries ?? client.maxRetries;
-    let attempt = 0;
-    while (true) {
-        try {
-            const rawResponse = await utilFetch(url.toString(), {
-                method,
-                headers,
-                body: body,
-                timeout,
-            });
-            const response = rawResponse;
-            switch (true) {
-                // 命中可重试状态且未超过上限：指数退避后重试。
-                // Retry with exponential backoff for retryable status while attempts remain.
-                case attempt < maxRetries && (RETRYABLE_STATUS_CODES.has(response.status) || response.status >= 500):
-                    // Reuse current backoff policy inline to avoid helper indirection.
-                    await new Promise(resolve => setTimeout(resolve, 200 * 2 ** attempt));
-                    attempt += 1;
-                    continue;
-                // 其余状态直接返回。
-                // Return immediately for non-retryable statuses.
-                default:
-                    break;
-            }
-            return response;
-        }
-        catch (error) {
-            switch (true) {
-                // 已达到重试上限，抛出最后一次错误。
-                // Throw the last error once retry budget is exhausted.
-                case attempt >= maxRetries:
-                    throw error;
-                // 仍可重试时先退避，再进行下一次请求。
-                // Back off and retry when retry budget is still available.
-                default:
-                    await new Promise(resolve => setTimeout(resolve, 200 * 2 ** attempt));
-                    attempt += 1;
-                    break;
-            }
-        }
-    }
+    return {
+        url: url.toString(),
+        method,
+        headers,
+        body: body,
+        timeout: options.timeout ?? client.timeout,
+    };
 }
+/**
+ * 生成最终请求 URL 并写入 query 参数。
+ * Build final request URL and write query params.
+ *
+ * @param {Cloudflare} client 客户端实例 / Client instance.
+ * @param {string} path API 路径 / API path.
+ * @param {QueryLike} [query={}] 查询参数 / Query params.
+ * @returns {URL} 最终 URL / Final URL.
+ */
 function createURL(client, path, query = {}) {
     const url = new URL(`${client.baseURL}${path}`);
     for (const [key, value] of Object.entries({ ...client.defaultQuery, ...query })) {
@@ -1008,6 +978,13 @@ function createURL(client, path, query = {}) {
     }
     return url;
 }
+/**
+ * 根据客户端鉴权配置生成请求头。
+ * Build auth headers from client credentials.
+ *
+ * @param {Cloudflare} client 客户端实例 / Client instance.
+ * @returns {HeadersLike} 鉴权请求头 / Auth headers.
+ */
 function createAuthHeaders(client) {
     switch (true) {
         // 首选 API Token 鉴权。
@@ -1035,40 +1012,77 @@ function createAuthHeaders(client) {
             return {};
     }
 }
-async function createError(response, body) {
-    let payload = body;
+/**
+ * 解析响应体为 JSON 或文本。
+ * Parse response body as JSON or plain text.
+ *
+ * @param {FetchResponse} response 统一响应对象 / Unified response object.
+ * @returns {unknown} 解析结果 / Parsed payload.
+ */
+function parseResponseBody(response) {
+    const rawBody = response.body ?? "";
     switch (true) {
-        // 调用方未提供 payload 时，从响应体读取并尝试解析。
-        // Read and parse response body only when payload is not provided by caller.
-        case payload === undefined: {
-            const rawBody = typeof response.body === "string" ? response.body : "";
-            switch (true) {
-                // 非空响应体优先按 JSON 解析，失败则保留原始文本。
-                // Parse non-empty response text as JSON first; keep raw text on failure.
-                case Boolean(rawBody):
-                    try {
-                        payload = JSON.parse(rawBody);
-                    }
-                    catch (error) {
-                        payload = rawBody;
-                    }
-                    break;
-                // 空响应体统一视为 null。
-                // Treat empty response body as null.
-                default:
-                    payload = null;
-                    break;
+        // 非空响应体优先按 JSON 解析，失败则保留原始文本。
+        // Parse non-empty response text as JSON first; keep raw text on failure.
+        case Boolean(rawBody):
+            try {
+                return JSON.parse(rawBody);
             }
-            break;
-        }
-        // 调用方已提供 payload，直接使用。
-        // Use caller-provided payload as-is.
+            catch (error) {
+                return rawBody;
+            }
+        // 空响应体统一视为 null。
+        // Treat empty response body as null.
         default:
-            break;
+            return null;
     }
-    const envelope = typeof payload === "object" && payload !== null && ("success" in payload || "result" in payload || "errors" in payload)
+}
+/**
+ * 判断并转换为 Cloudflare V4 包裹结构。
+ * Detect and cast payload to Cloudflare V4 envelope.
+ *
+ * @param {unknown} payload 响应载荷 / Response payload.
+ * @returns {CloudflareEnvelope | null} 包裹结构或空 / Envelope or null.
+ */
+function toCloudflareEnvelope(payload) {
+    return typeof payload === "object" && payload !== null && ("success" in payload || "result" in payload || "errors" in payload)
         ? payload
         : null;
+}
+/**
+ * 按 Cloudflare V4 `messages/errors` 发出通知。
+ * Emit notifications from Cloudflare V4 `messages/errors`.
+ *
+ * @param {CloudflareEnvelope} envelope Cloudflare 包裹响应 / Cloudflare envelope response.
+ * @returns {void} 无返回值 / No return value.
+ */
+function notifyEnvelope(envelope) {
+    for (const message of envelope.messages ?? []) {
+        if (!message?.message)
+            continue;
+        if (message.code === 10000)
+            continue;
+        notification("Cloudflare API", `code: ${message.code ?? ""}`, `message: ${message.message}`);
+    }
+    if (envelope.success !== false)
+        return;
+    for (const error of envelope.errors ?? []) {
+        if (!error?.message)
+            continue;
+        notification("Cloudflare API", `code: ${error.code ?? ""}`, `message: ${error.message}`);
+    }
+}
+/**
+ * 将失败响应转换为统一异常对象。
+ * Convert failed response into unified error object.
+ *
+ * @param {FetchResponse} response 统一响应对象 / Unified response object.
+ * @param {unknown} [body] 已解析载荷 / Parsed payload.
+ * @returns {Promise<CloudflareAPIError>} API 错误对象 / API error object.
+ */
+async function createError(response, body) {
+    const payload = body === undefined ? parseResponseBody(response) : body;
+    const envelope = toCloudflareEnvelope(payload);
     const message = envelope?.errors?.find(item => Boolean(item?.message))?.message ??
         envelope?.messages?.find(item => Boolean(item?.message))?.message ??
         response.statusText ??
@@ -1079,6 +1093,13 @@ async function createError(response, body) {
         body: payload,
     });
 }
+/**
+ * 读取环境变量（Node.js 运行时）。
+ * Read environment variable (Node.js runtime).
+ *
+ * @param {string} name 环境变量名 / Environment variable name.
+ * @returns {string | null} 环境变量值 / Environment variable value.
+ */
 function readEnv(name) {
     const runtime = globalThis;
     return runtime.process?.env?.[name] ?? null;

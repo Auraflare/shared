@@ -327,12 +327,11 @@ export class KV {
 			limit: options.limit,
 			cursor: options.cursor,
 		};
-		const page = await this.client!.kv.namespaces.keys.list(this.namespace_id!, params);
-		const cursor = page.result_info.cursor ?? page.result_info.cursors?.after ?? "";
+		const keys = await this.client!.kv.namespaces.keys.list(this.namespace_id!, params);
 		return {
-			keys: page.result as KVListKey[],
-			list_complete: !page.hasNextPage(),
-			cursor,
+			keys: keys as KVListKey[],
+			list_complete: true,
+			cursor: "",
 		};
 	}
 }

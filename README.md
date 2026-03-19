@@ -183,10 +183,7 @@ const response = await client.kv.namespaces.values.get("namespace-id", "KEY", {
 	account_id: "account-id",
 });
 
-const value =
-	typeof response.body === "string"
-		? response.body
-		: new TextDecoder().decode(response.bodyBytes ?? new ArrayBuffer(0));
+const value = response.body ?? "";
 
 await client.kv.namespaces.values.delete("namespace-id", "KEY", {
 	account_id: "account-id",
