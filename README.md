@@ -22,7 +22,7 @@ npm i @auraflare/shared
 - `KV`
 
 ```ts
-import Cloudflare, { KV } from "@auraflare/shared";
+import Cloudflare, { KV as Storage } from "@auraflare/shared";
 ```
 
 ### `@auraflare/shared/Cloudflare`
@@ -58,7 +58,7 @@ import type { ClientOptions, RequestOptions } from "@auraflare/shared/Cloudflare
 - `KVListResult`
 
 ```ts
-import { KV } from "@auraflare/shared/KV";
+import { KV as Storage } from "@auraflare/shared/KV";
 import type { KVInitOptions, KVNamespaceLike } from "@auraflare/shared/KV";
 ```
 
@@ -115,14 +115,7 @@ client.dns.records.get(dnsRecordId, { zone_id });
 client.dns.records.list({ zone_id });
 client.dns.records.update(dnsRecordId, params);
 client.dns.records.delete(dnsRecordId, { zone_id });
-client.dns.records.batch({ zone_id, ... });
 client.dns.records.edit(dnsRecordId, params);
-client.dns.records.export({ zone_id });
-client.dns.records.import({ zone_id, file, proxied });
-client.dns.records.scan({ zone_id, body });
-client.dns.records.scanList({ zone_id });
-client.dns.records.scanReview({ zone_id, accepts, rejects });
-client.dns.records.scanTrigger({ zone_id });
 
 client.kv.namespaces.create({ account_id, title });
 client.kv.namespaces.update(namespaceId, { account_id, title });
@@ -144,6 +137,29 @@ client.kv.namespaces.values.get(namespaceId, keyName, { account_id });
 client.kv.namespaces.values.update(namespaceId, keyName, { account_id, value });
 client.kv.namespaces.values.delete(namespaceId, keyName, { account_id });
 ```
+
+### Legacy -> Current Mapping
+
+以下表格对应旧版 `7f9a00d531d002acc32f2df7016468dac8f1c521` 的调用方式：
+
+| 旧方法（静态） | 新方法（当前） | 说明 |
+| --- | --- | --- |
+| `Cloudflare.trace(request)` | `Cloudflare.trace(options?)` | 不再传入可变 `request` 对象 |
+| `Cloudflare.trace4(request)` | `Cloudflare.trace4(options?)` | 同上 |
+| `Cloudflare.trace6(request)` | `Cloudflare.trace6(options?)` | 同上 |
+| `Cloudflare.verifyToken(request)` | `client.user.tokens.verify(options?)` | 从静态方法迁移到实例资源 |
+| `Cloudflare.getUser(request)` | `client.user.get(options?)` | 从静态方法迁移到实例资源 |
+| `Cloudflare.getZone(request, Zone)` | `client.zones.get({ zone_id })` | `zone_id` 直接传结构化参数 |
+| `Cloudflare.listZones(request, Zone)` | `client.zones.list({ name })` | 查询参数改为结构化对象 |
+| `Cloudflare.createDNSRecord(request, Zone, Record)` | `client.dns.records.create({ zone_id, ...record })` | `zone_id` 放在参数对象内 |
+| `Cloudflare.getDNSRecord(request, Zone, Record)` | `client.dns.records.get(recordId, { zone_id })` | 记录 ID 单独参数 |
+| `Cloudflare.listDNSRecords(request, Zone, Record)` | `client.dns.records.list({ zone_id, ...filters })` | 过滤参数按字段传入 |
+| `Cloudflare.updateDNSRecord(request, Zone, Record)` | `client.dns.records.update(recordId, { zone_id, ...record })` | 记录 ID 单独参数 |
+| 旧版无 | `client.dns.records.delete(recordId, { zone_id })` | 当前保留的 DNS 增量接口（新增） |
+| 旧版无 | `client.dns.records.edit(recordId, { zone_id, ...patch })` | 当前保留的 DNS 增量接口（新增） |
+| `Cloudflare.fetch(request, option)` | `Cloudflare.fetch(request, options?)` | 仍保留静态入口，内部统一处理 JSON/错误/通知 |
+
+补充：当前 DNS 增量接口只保留 `delete` 和 `edit`，未保留 `batch/export/import/scan*`。
 
 ### DNS Example
 
@@ -205,20 +221,20 @@ const route6 = await Cloudflare.trace6();
 `KV` 提供接近 `Storage` 的统一接口：
 
 ```ts
-const kv = new KV(init);
+const storage = new Storage(init);
 
-await kv.getItem(keyName, defaultValue);
-await kv.setItem(keyName, value);
-await kv.removeItem(keyName);
-await kv.clear();
-await kv.list({ prefix, limit, cursor });
+await storage.getItem(keyName, defaultValue);
+await storage.setItem(keyName, value);
+await storage.removeItem(keyName);
+await storage.clear();
+await storage.list({ prefix, limit, cursor });
 ```
 
 ### Backend Priority
 
 固定优先级：
 
-1. `namespace` (`new KV(namespace)` / `new KV({ namespace })` / `new KV({ env: { namespace } })`)
+1. `namespace` (`new Storage(namespace)` / `new Storage({ namespace })` / `new Storage({ env: { namespace } })`)
 2. 显式传入的 `client` + `account_id` + `namespace_id`
 3. 认证参数 + `account_id` + `namespace_id`（内部创建 `Cloudflare`）
 4. `@nsnanocat/util` 的 `Storage`
@@ -226,27 +242,27 @@ await kv.list({ prefix, limit, cursor });
 ### Worker Namespace Example
 
 ```ts
-const kv = new KV({
+const storage = new Storage({
 	env: {
 		namespace: env.SETTINGS_KV,
 	},
 });
 
-await kv.setItem("settings", { theme: "light" });
-const settings = await kv.getItem("settings", {});
+await storage.setItem("settings", { theme: "light" });
+const settings = await storage.getItem("settings", {});
 ```
 
 ### Cloudflare REST Example
 
 ```ts
-const kv = new KV({
+const storage = new Storage({
 	apiToken: process.env.CLOUDFLARE_API_TOKEN,
 	account_id: "account-id",
 	namespace_id: "namespace-id",
 });
 
-await kv.setItem("feature-x", true);
-const value = await kv.getItem("feature-x", false);
+await storage.setItem("feature-x", true);
+const value = await storage.getItem("feature-x", false);
 ```
 
 ### Path Key Support
@@ -254,11 +270,11 @@ const value = await kv.getItem("feature-x", false);
 支持 `@root.path` 形式：
 
 ```ts
-await kv.setItem("@settings.theme", "dark");
-await kv.setItem("@settings.layout.sidebar", true);
+await storage.setItem("@settings.theme", "dark");
+await storage.setItem("@settings.layout.sidebar", true);
 
-const theme = await kv.getItem("@settings.theme", "light");
-await kv.removeItem("@settings.layout.sidebar");
+const theme = await storage.getItem("@settings.theme", "light");
+await storage.removeItem("@settings.layout.sidebar");
 ```
 
 ### `clear()` Behavior

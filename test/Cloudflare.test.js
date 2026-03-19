@@ -93,7 +93,7 @@ describe("Cloudflare smoke", () => {
 		);
 	});
 
-	it("supports dns.records delete/batch/edit/export/import/scan endpoints", async () => {
+	it("supports dns.records delete/edit endpoints", async () => {
 		const calls = [];
 		await withMockFetch(
 			async (url, options = {}) => {
@@ -104,44 +104,8 @@ describe("Cloudflare smoke", () => {
 				if (method === "DELETE" && parsed.pathname.endsWith("/zones/zone-id/dns_records/record-1")) {
 					return jsonResponse({ success: true, result: { id: "record-1" } });
 				}
-				if (method === "POST" && parsed.pathname.endsWith("/zones/zone-id/dns_records/batch")) {
-					return jsonResponse({
-						success: true,
-						result: {
-							deletes: [{ id: "record-1" }],
-							patches: [],
-							posts: [],
-							puts: [],
-						},
-					});
-				}
 				if (method === "PATCH" && parsed.pathname.endsWith("/zones/zone-id/dns_records/record-1")) {
 					return jsonResponse({ success: true, result: { id: "record-1", type: "A", name: "www" } });
-				}
-				if (method === "GET" && parsed.pathname.endsWith("/zones/zone-id/dns_records/export")) {
-					return textResponse("example.com. 300 IN A 1.1.1.1");
-				}
-				if (method === "POST" && parsed.pathname.endsWith("/zones/zone-id/dns_records/import")) {
-					return jsonResponse({ success: true, result: { recs_added: 1, total_records_parsed: 1 } });
-				}
-				if (method === "POST" && parsed.pathname.endsWith("/zones/zone-id/dns_records/scan")) {
-					return jsonResponse({ success: true, result: { recs_added: 1, total_records_parsed: 1 } });
-				}
-				if (method === "GET" && parsed.pathname.endsWith("/zones/zone-id/dns_records/scan/review")) {
-					return jsonResponse({
-						success: true,
-						result: [{ id: "record-1", type: "A", name: "www" }],
-						result_info: {},
-					});
-				}
-				if (method === "POST" && parsed.pathname.endsWith("/zones/zone-id/dns_records/scan/review")) {
-					return jsonResponse({
-						success: true,
-						result: { accepts: [{ id: "record-1", type: "A", name: "www" }], rejects: ["record-2"] },
-					});
-				}
-				if (method === "POST" && parsed.pathname.endsWith("/zones/zone-id/dns_records/scan/trigger")) {
-					return jsonResponse({ success: true, result: { success: true, errors: [], messages: [] } });
 				}
 				throw new Error(`unexpected request: ${method} ${parsed.toString()}`);
 			},
@@ -151,12 +115,6 @@ describe("Cloudflare smoke", () => {
 				const deleted = await client.dns.records.delete("record-1", { zone_id: "zone-id" });
 				assert.strictEqual(deleted.id, "record-1");
 
-				const batched = await client.dns.records.batch({
-					zone_id: "zone-id",
-					deletes: [{ id: "record-1" }],
-				});
-				assert.strictEqual(batched.deletes[0].id, "record-1");
-
 				const edited = await client.dns.records.edit("record-1", {
 					zone_id: "zone-id",
 					name: "www",
@@ -164,39 +122,9 @@ describe("Cloudflare smoke", () => {
 				});
 				assert.strictEqual(edited.id, "record-1");
 
-				const exported = await client.dns.records.export({ zone_id: "zone-id" });
-				assert.match(exported, /example\.com/);
-
-				const imported = await client.dns.records.import({
-					zone_id: "zone-id",
-					file: "example.com. 300 IN A 1.1.1.1",
-					proxied: "true",
-				});
-				assert.strictEqual(imported.recs_added, 1);
-				assert.strictEqual(calls[4].options.body instanceof FormData, true);
-
-				const scanned = await client.dns.records.scan({
-					zone_id: "zone-id",
-					body: { force: true },
-				});
-				assert.strictEqual(scanned.total_records_parsed, 1);
-
-				const scannedRecords = await client.dns.records.scanList({ zone_id: "zone-id" });
-				assert.strictEqual(scannedRecords.length, 1);
-
-				const reviewed = await client.dns.records.scanReview({
-					zone_id: "zone-id",
-					accepts: [{ type: "A", name: "www" }],
-					rejects: [{ id: "record-2" }],
-				});
-				assert.strictEqual(reviewed.rejects[0], "record-2");
-
-				const triggered = await client.dns.records.scanTrigger({ zone_id: "zone-id" });
-				assert.strictEqual(triggered.success, true);
-
 				assert.deepStrictEqual(
 					calls.map(call => call.method),
-					["DELETE", "POST", "PATCH", "GET", "POST", "POST", "GET", "POST", "POST"],
+					["DELETE", "PATCH"],
 				);
 			},
 		);

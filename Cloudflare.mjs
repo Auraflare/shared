@@ -188,21 +188,6 @@ class DNSRecordsResource extends APIResource {
         return deleteResult(this._client, `/zones/${encodeURIComponent(params.zone_id)}/dns_records/${encodeURIComponent(dnsRecordId)}`, options);
     }
     /**
-     * 批量执行 DNS 记录操作。
-     * Execute DNS record operations in batch.
-     *
-     * @param {RecordBatchParams} params 请求参数 / Request params.
-     * @param {RequestOptions} [options] 请求选项 / Request options.
-     * @returns {Promise<RecordBatchResponse>}
-     */
-    batch(params, options) {
-        const { zone_id, ...body } = params;
-        return postResult(this._client, `/zones/${encodeURIComponent(zone_id)}/dns_records/batch`, {
-            ...options,
-            body,
-        });
-    }
-    /**
      * 增量更新 DNS 记录。
      * Patch a DNS record.
      *
@@ -219,23 +204,6 @@ class DNSRecordsResource extends APIResource {
         });
     }
     /**
-     * 导出 DNS 区域文件。
-     * Export DNS zone file.
-     *
-     * @param {RecordExportParams} params 路径参数 / Path params.
-     * @param {RequestOptions} [options] 请求选项 / Request options.
-     * @returns {Promise<RecordExportResponse>}
-     */
-    export(params, options) {
-        return getResult(this._client, `/zones/${encodeURIComponent(params.zone_id)}/dns_records/export`, {
-            ...options,
-            headers: {
-                ...options?.headers,
-                Accept: "text/plain",
-            },
-        });
-    }
-    /**
      * 获取 DNS 记录。
      * Get a DNS record.
      *
@@ -246,77 +214,6 @@ class DNSRecordsResource extends APIResource {
      */
     get(dnsRecordId, params, options) {
         return getResult(this._client, `/zones/${encodeURIComponent(params.zone_id)}/dns_records/${encodeURIComponent(dnsRecordId)}`, options);
-    }
-    /**
-     * 导入 DNS 区域文件。
-     * Import DNS zone file.
-     *
-     * @param {RecordImportParams} params 请求参数 / Request params.
-     * @param {RequestOptions} [options] 请求选项 / Request options.
-     * @returns {Promise<RecordImportResponse>}
-     */
-    import(params, options) {
-        const { zone_id, file, proxied } = params;
-        const formData = new FormData();
-        formData.append("file", file);
-        if (proxied !== undefined)
-            formData.append("proxied", proxied);
-        return postResult(this._client, `/zones/${encodeURIComponent(zone_id)}/dns_records/import`, {
-            ...options,
-            body: formData,
-        });
-    }
-    /**
-     * 同步扫描并写入 DNS 记录。
-     * Scan and import DNS records synchronously.
-     *
-     * @param {RecordScanParams} params 请求参数 / Request params.
-     * @param {RequestOptions} [options] 请求选项 / Request options.
-     * @returns {Promise<RecordScanResponse>}
-     */
-    scan(params, options) {
-        const { zone_id, body } = params;
-        return postResult(this._client, `/zones/${encodeURIComponent(zone_id)}/dns_records/scan`, {
-            ...options,
-            body,
-        });
-    }
-    /**
-     * 获取异步扫描结果列表。
-     * List asynchronous scan results.
-     *
-     * @param {RecordScanListParams} params 路径参数 / Path params.
-     * @param {RequestOptions} [options] 请求选项 / Request options.
-     * @returns {Promise<RecordResponse[]>}
-     */
-    scanList(params, options) {
-        return getResult(this._client, `/zones/${encodeURIComponent(params.zone_id)}/dns_records/scan/review`, options);
-    }
-    /**
-     * 接受或拒绝扫描出的 DNS 记录。
-     * Accept or reject scanned DNS records.
-     *
-     * @param {RecordScanReviewParams} params 请求参数 / Request params.
-     * @param {RequestOptions} [options] 请求选项 / Request options.
-     * @returns {Promise<RecordScanReviewResponse>}
-     */
-    scanReview(params, options) {
-        const { zone_id, ...body } = params;
-        return postResult(this._client, `/zones/${encodeURIComponent(zone_id)}/dns_records/scan/review`, {
-            ...options,
-            body,
-        });
-    }
-    /**
-     * 触发异步 DNS 记录扫描。
-     * Trigger asynchronous DNS record scan.
-     *
-     * @param {RecordScanTriggerParams} params 路径参数 / Path params.
-     * @param {RequestOptions} [options] 请求选项 / Request options.
-     * @returns {Promise<RecordScanTriggerResponse>}
-     */
-    scanTrigger(params, options) {
-        return postResult(this._client, `/zones/${encodeURIComponent(params.zone_id)}/dns_records/scan/trigger`, options);
     }
 }
 /**
