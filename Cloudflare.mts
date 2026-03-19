@@ -2117,18 +2117,34 @@ async function requestClient<Result>(
 		default: {
 			const rawBody = await response.text();
 			let body: unknown = null;
-			if (rawBody) {
-				try {
-					body = JSON.parse(rawBody);
-				} catch (error) {
-					body = rawBody;
-				}
+			switch (true) {
+				// 有响应体时优先按 JSON 解析，失败则保留原始文本。
+				// When body text exists, parse JSON first and fall back to raw text.
+				case Boolean(rawBody):
+					try {
+						body = JSON.parse(rawBody);
+					} catch (error) {
+						body = rawBody;
+					}
+					break;
+				// 空响应体保持为 null。
+				// Keep null when response body is empty.
+				default:
+					break;
 			}
 			// V4 APIs usually return envelopes: { success, result, errors, ... }.
-			if (typeof body === "object" && body !== null && ("success" in body || "result" in body || "errors" in body)) {
-				const envelope = body as CloudflareEnvelope;
-				if (envelope.success === false) throw await createError(response, envelope);
-				return (options.unwrapResult === false ? envelope : (envelope.result ?? null)) as Result;
+			switch (true) {
+				// 命中 Cloudflare V4 包裹结构时，处理 success/error 并按配置解包 result。
+				// For Cloudflare V4 envelopes, handle success/error and unwrap result when needed.
+				case typeof body === "object" && body !== null && ("success" in body || "result" in body || "errors" in body): {
+					const envelope = body as CloudflareEnvelope;
+					if (envelope.success === false) throw await createError(response, envelope);
+					return (options.unwrapResult === false ? envelope : (envelope.result ?? null)) as Result;
+				}
+				// 非包裹结构直接返回原值。
+				// Return raw payload directly when it is not an envelope.
+				default:
+					break;
 			}
 			return body as Result;
 		}
@@ -2150,22 +2166,36 @@ async function fetchResponse(
 		...options.headers,
 	};
 	let body = options.body;
-	if (body === undefined || body === null) {
-		body = undefined;
-	} else if (typeof FormData !== "undefined" && body instanceof FormData) {
-		// Let runtime set multipart boundary automatically.
-		for (const key of Object.keys(headers)) {
-			if (key.toLowerCase() === "content-type") delete headers[key];
+	switch (true) {
+		// 空 body 不传给 fetch。
+		// Do not send a body when it is nullish.
+		case body === undefined || body === null:
+			body = undefined;
+			break;
+		// FormData 由运行时自动追加 multipart boundary，因此清理手写 Content-Type。
+		// FormData needs runtime-managed multipart boundary, so remove manual Content-Type.
+		case typeof FormData !== "undefined" && body instanceof FormData:
+			// Let runtime set multipart boundary automatically.
+			for (const key of Object.keys(headers)) {
+				if (key.toLowerCase() === "content-type") delete headers[key];
+			}
+			break;
+		// 普通对象按 JSON 发送，并在缺失时补充 application/json。
+		// Send plain objects as JSON and add application/json when absent.
+		case
+			!(body instanceof ArrayBuffer) &&
+			!ArrayBuffer.isView(body) &&
+			typeof body !== "string" &&
+			Object.prototype.toString.call(body) === "[object Object]": {
+			const hasContentType = Object.keys(headers).some(key => key.toLowerCase() === "content-type");
+			if (!hasContentType) headers["Content-Type"] = "application/json";
+			body = JSON.stringify(body);
+			break;
 		}
-	} else if (
-		!(body instanceof ArrayBuffer) &&
-		!ArrayBuffer.isView(body) &&
-		typeof body !== "string" &&
-		Object.prototype.toString.call(body) === "[object Object]"
-	) {
-		const hasContentType = Object.keys(headers).some(key => key.toLowerCase() === "content-type");
-		if (!hasContentType) headers["Content-Type"] = "application/json";
-		body = JSON.stringify(body);
+		// 其余类型（字符串/二进制）原样透传。
+		// Pass through other body types (string/binary) unchanged.
+		default:
+			break;
 	}
 	const fetcher = options.fetch ?? client.fetch ?? utilFetch;
 	const timeout = options.timeout ?? client.timeout;
@@ -2180,17 +2210,33 @@ async function fetchResponse(
 				timeout,
 				});
 				const response = await normalizeResponse(rawResponse, url.toString());
-				if (attempt < maxRetries && (RETRYABLE_STATUS_CODES.has(response.status) || response.status >= 500)) {
-					// Reuse current backoff policy inline to avoid helper indirection.
-					await new Promise(resolve => setTimeout(resolve, 200 * 2 ** attempt));
-					attempt += 1;
-					continue;
+				switch (true) {
+					// 命中可重试状态且未超过上限：指数退避后重试。
+					// Retry with exponential backoff for retryable status while attempts remain.
+					case attempt < maxRetries && (RETRYABLE_STATUS_CODES.has(response.status) || response.status >= 500):
+						// Reuse current backoff policy inline to avoid helper indirection.
+						await new Promise(resolve => setTimeout(resolve, 200 * 2 ** attempt));
+						attempt += 1;
+						continue;
+					// 其余状态直接返回。
+					// Return immediately for non-retryable statuses.
+					default:
+						break;
 				}
 				return response;
 			} catch (error) {
-				if (attempt >= maxRetries) throw error;
-				await new Promise(resolve => setTimeout(resolve, 200 * 2 ** attempt));
-				attempt += 1;
+				switch (true) {
+					// 已达到重试上限，抛出最后一次错误。
+					// Throw the last error once retry budget is exhausted.
+					case attempt >= maxRetries:
+						throw error;
+					// 仍可重试时先退避，再进行下一次请求。
+					// Back off and retry when retry budget is still available.
+					default:
+						await new Promise(resolve => setTimeout(resolve, 200 * 2 ** attempt));
+						attempt += 1;
+						break;
+				}
 			}
 		}
 }
@@ -2204,6 +2250,8 @@ function createURL(client: Cloudflare, path: string, query: QueryLike = {}): URL
 		}
 		if (value === null) continue;
 		switch (true) {
+			// 数组参数展开为多个同名 query 键。
+			// Expand array values into repeated query keys.
 			case Array.isArray(value):
 				url.searchParams.delete(key);
 				for (const item of value) {
@@ -2211,6 +2259,8 @@ function createURL(client: Cloudflare, path: string, query: QueryLike = {}): URL
 					url.searchParams.append(key, typeof item === "object" ? JSON.stringify(item) : String(item));
 				}
 				break;
+			// 单值参数写入一个 query 键；对象值序列化为 JSON 字符串。
+			// Write scalar values as one query key; serialize object values as JSON.
 			default:
 				url.searchParams.set(key, typeof value === "object" ? JSON.stringify(value) : String(value));
 				break;
@@ -2220,38 +2270,62 @@ function createURL(client: Cloudflare, path: string, query: QueryLike = {}): URL
 }
 
 function createAuthHeaders(client: Cloudflare): HeadersLike {
-	if (client.apiToken) {
-		return {
-			Authorization: `Bearer ${client.apiToken}`,
-		};
+	switch (true) {
+		// 首选 API Token 鉴权。
+		// API Token has highest priority.
+		case Boolean(client.apiToken):
+			return {
+				Authorization: `Bearer ${client.apiToken}`,
+			};
+		// 次选 Global API Key + Email。
+		// Fallback to Global API Key + Email.
+		case Boolean(client.apiKey && client.apiEmail):
+			return {
+				"X-Auth-Key": client.apiKey!,
+				"X-Auth-Email": client.apiEmail!,
+			};
+		// 再次选 User Service Key。
+		// Then fallback to User Service Key.
+		case Boolean(client.userServiceKey):
+			return {
+				"X-Auth-User-Service-Key": client.userServiceKey!,
+			};
+		// 都未配置时不注入鉴权头。
+		// Inject no auth header when none is configured.
+		default:
+			return {};
 	}
-	if (client.apiKey && client.apiEmail) {
-		return {
-			"X-Auth-Key": client.apiKey,
-			"X-Auth-Email": client.apiEmail,
-		};
-	}
-	if (client.userServiceKey) {
-		return {
-			"X-Auth-User-Service-Key": client.userServiceKey,
-		};
-	}
-	return {};
 }
 
 async function createError(response: CloudflareResponse, body?: unknown): Promise<CloudflareAPIError> {
 	let payload = body;
-	if (payload === undefined) {
-		const rawBody = await response.text();
-		if (rawBody) {
-			try {
-				payload = JSON.parse(rawBody);
-			} catch (error) {
-				payload = rawBody;
+	switch (true) {
+		// 调用方未提供 payload 时，从响应体读取并尝试解析。
+		// Read and parse response body only when payload is not provided by caller.
+		case payload === undefined: {
+			const rawBody = await response.text();
+			switch (true) {
+				// 非空响应体优先按 JSON 解析，失败则保留原始文本。
+				// Parse non-empty response text as JSON first; keep raw text on failure.
+				case Boolean(rawBody):
+					try {
+						payload = JSON.parse(rawBody);
+					} catch (error) {
+						payload = rawBody;
+					}
+					break;
+				// 空响应体统一视为 null。
+				// Treat empty response body as null.
+				default:
+					payload = null;
+					break;
 			}
-		} else {
-			payload = null;
+			break;
 		}
+		// 调用方已提供 payload，直接使用。
+		// Use caller-provided payload as-is.
+		default:
+			break;
 	}
 	const envelope =
 		typeof payload === "object" && payload !== null && ("success" in payload || "result" in payload || "errors" in payload)
@@ -2279,15 +2353,26 @@ function readEnv(name: string): string | null {
 }
 
 async function normalizeResponse(rawResponse: FetchResponse | Response | CloudflareResponse, url = ""): Promise<CloudflareResponse> {
-	if (rawResponse instanceof CloudflareResponse) return rawResponse;
-	if (typeof (rawResponse as Response).arrayBuffer === "function") {
-		const response = rawResponse as Response;
-		return new CloudflareResponse(await response.clone().arrayBuffer(), {
-			status: response.status,
-			statusText: response.statusText,
-			headers: response.headers,
-			url: response.url || url,
-		});
+	switch (true) {
+		// 已是统一响应类型时直接返回。
+		// Return directly when response is already normalized.
+		case rawResponse instanceof CloudflareResponse:
+			return rawResponse;
+		// 标准 Web Response：读取二进制体并封装为 CloudflareResponse。
+		// Web Response: read binary body and wrap into CloudflareResponse.
+		case typeof (rawResponse as Response).arrayBuffer === "function": {
+			const response = rawResponse as Response;
+			return new CloudflareResponse(await response.clone().arrayBuffer(), {
+				status: response.status,
+				statusText: response.statusText,
+				headers: response.headers,
+				url: response.url || url,
+			});
+		}
+		// 其余按 util FetchResponse 结构读取并封装。
+		// Otherwise map util FetchResponse shape into CloudflareResponse.
+		default:
+			break;
 	}
 	const response = rawResponse as FetchResponse;
 	const body = response.bodyBytes ?? response.body ?? "";
