@@ -51,7 +51,7 @@
 		"KV.mts"
 	],
 	"dependencies": {
-		"@nsnanocat/util": "^2.5.2"
+		"@nsnanocat/util": "^2.5.17"
 	},
 	"publishConfig": {
 		"registry": "https://registry.npmjs.org/",
