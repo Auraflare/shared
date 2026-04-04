@@ -169,17 +169,16 @@ export class KV {
 			}
 			case "legacy": {
 				let keyValue = defaultValue;
-				if (route.originalKeyName.startsWith("@")) {
-					const { key, path } = route.originalKeyName.match(KV.#nameRegex)?.groups ?? {};
-					const rootKeyName = key ?? route.originalKeyName;
-					let value = await this.getItem(rootKeyName, {});
-					if (typeof value !== "object" || value === null) {
-						value = {};
-					}
-					keyValue = _.get(value, path);
-					keyValue = deserialize(keyValue);
-					return keyValue ?? defaultValue;
+				let value = await this.getItem(route.rootKeyName, {});
+				if (typeof value !== "object" || value === null) {
+					value = {};
 				}
+				keyValue = _.get(value, route.path);
+				keyValue = deserialize(keyValue);
+				return keyValue ?? defaultValue;
+			}
+			case "normal": {
+				let keyValue = defaultValue;
 
 				// The empty-string prefix is the default namespace fallback for plain keys.
 				const defaultNamespace = this.namespaces.get("");
@@ -263,17 +262,17 @@ export class KV {
 			case "legacy": {
 				let result = false;
 				const serializedValue = serialize(keyValue);
-				if (route.originalKeyName.startsWith("@")) {
-					const { key, path } = route.originalKeyName.match(KV.#nameRegex)?.groups ?? {};
-					const rootKeyName = key ?? route.originalKeyName;
-					let value = await this.getItem(rootKeyName, {});
-					if (typeof value !== "object" || value === null) {
-						value = {};
-					}
-					_.set(value, path, serializedValue);
-					result = await this.setItem(rootKeyName, value);
-					return result;
+				let value = await this.getItem(route.rootKeyName, {});
+				if (typeof value !== "object" || value === null) {
+					value = {};
 				}
+				_.set(value, route.path, serializedValue);
+				result = await this.setItem(route.rootKeyName, value);
+				return result;
+			}
+			case "normal": {
+				let result = false;
+				const serializedValue = serialize(keyValue);
 
 				const defaultNamespace = this.namespaces.get("");
 				switch (true) {
@@ -322,17 +321,16 @@ export class KV {
 				throw new TypeError(`KV.removeItem(${JSON.stringify(route.originalKeyName)}) does not support parent registered prefixes in KV.namespaces.`);
 			case "legacy": {
 				let result = false;
-				if (route.originalKeyName.startsWith("@")) {
-					const { key, path } = route.originalKeyName.match(KV.#nameRegex)?.groups ?? {};
-					const rootKeyName = key ?? route.originalKeyName;
-					let value = await this.getItem(rootKeyName, {});
-					if (typeof value !== "object" || value === null) {
-						value = {};
-					}
-					_.unset(value, path);
-					result = await this.setItem(rootKeyName, value);
-					return result;
+				let value = await this.getItem(route.rootKeyName, {});
+				if (typeof value !== "object" || value === null) {
+					value = {};
 				}
+				_.unset(value, route.path);
+				result = await this.setItem(route.rootKeyName, value);
+				return result;
+			}
+			case "normal": {
+				let result = false;
 
 				const defaultNamespace = this.namespaces.get("");
 				switch (true) {
@@ -426,6 +424,7 @@ export class KV {
 				case "child":
 					throw new TypeError(`KV.list(${JSON.stringify(route.originalKeyName)}) does not support child keys registered in KV.namespaces.`);
 				case "legacy":
+				case "normal":
 					throw new TypeError(`KV.list(${JSON.stringify(route.originalKeyName)}) requires an exact or parent registered prefix in KV.namespaces.`);
 			}
 		}
@@ -466,16 +465,17 @@ export class KV {
 	 * 1. `KV.namespaces.get(keyName)` 精确命中 / exact hit
 	 * 2. `keyName.startsWith(prefix + ".")` 的最长前缀 / longest child prefix
 	 * 3. `prefix.startsWith(keyName + ".")` 的父前缀聚合 / parent-prefix aggregation
-	 * 4. 未命中时返回 legacy / legacy fallback when unmatched
+	 * 4. 未命中且原始 key 以 `@` 开头时返回 legacy / return legacy when unmatched and the original key starts with `@`
+	 * 5. 其余未命中返回 normal / remaining unmatched keys return normal
 	 *
-	 * 返回值中的 `originalKeyName` 始终保留调用方原始输入；只有 child 路由会额外给出 `resolvedKeyName`，用于指出实际传给命中 namespace 绑定的 key。
-	 * The returned `originalKeyName` always keeps the caller's original input; only the child route adds `resolvedKeyName` to indicate the actual key passed to the matched namespace binding.
+	 * 返回值中的 `originalKeyName` 始终保留调用方原始输入；只有 child 路由会额外给出 `resolvedKeyName`，而 legacy 路由会额外给出 `rootKeyName` / `path`，用于指出后续 `@path` 读改写实际操作的根 key 与属性路径。
+	 * The returned `originalKeyName` always keeps the caller's original input; only the child route adds `resolvedKeyName`, while the legacy route adds `rootKeyName` / `path` to indicate the root key and property path used by subsequent `@path` read-modify-write operations.
 	 *
 	 * `entry` / `entries` 只表示 `namespaces` 中命中的注册项，也就是“该使用哪个绑定对象”；它们不直接表示最终读写的 KV key。
 	 * `entry` / `entries` only represent matched registrations from `namespaces`, meaning "which binding object to use"; they do not directly represent the final KV keys being read or written.
 	 *
 	 * @param {string} keyName 传入的原始键名 / Incoming original key name.
-	 * @returns {{ kind: "legacy", originalKeyName: string } | { kind: "exact", originalKeyName: string, entry: { registeredPrefix: string, namespaceBinding: import("./KV.d.ts").KVNamespaceLike } } | { kind: "child", originalKeyName: string, resolvedKeyName: string, entry: { registeredPrefix: string, namespaceBinding: import("./KV.d.ts").KVNamespaceLike } } | { kind: "parent", originalKeyName: string, entries: Array<{ registeredPrefix: string, namespaceBinding: import("./KV.d.ts").KVNamespaceLike }> }}
+	 * @returns {{ kind: "legacy", originalKeyName: string, rootKeyName: string, path?: string } | { kind: "normal", originalKeyName: string } | { kind: "exact", originalKeyName: string, entry: { registeredPrefix: string, namespaceBinding: import("./KV.d.ts").KVNamespaceLike } } | { kind: "child", originalKeyName: string, resolvedKeyName: string, entry: { registeredPrefix: string, namespaceBinding: import("./KV.d.ts").KVNamespaceLike } } | { kind: "parent", originalKeyName: string, entries: Array<{ registeredPrefix: string, namespaceBinding: import("./KV.d.ts").KVNamespaceLike }> }}
 	 */
 	#resolveNamespaceRoute(keyName) {
 		const exactNamespace = this.namespaces.get(keyName);
@@ -535,8 +535,18 @@ export class KV {
 			};
 		}
 
+		if (keyName.startsWith("@")) {
+			const { key, path } = keyName.match(KV.#nameRegex)?.groups ?? {};
+			return {
+				kind: "legacy",
+				originalKeyName: keyName,
+				rootKeyName: key ?? keyName,
+				path,
+			};
+		}
+
 		return {
-			kind: "legacy",
+			kind: "normal",
 			originalKeyName: keyName,
 		};
 	}

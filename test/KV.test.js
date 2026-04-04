@@ -436,11 +436,27 @@ describe("KV", () => {
 			KV.namespaces.set("@iRingo.Maps.Caches", createNamespace().namespace);
 			const kv = new KV();
 			const keyName = "@auraflareKvMapFallback.theme";
+			const nestedKeyName = "@auraflareKvMapFallback.preferences.color";
 			assert.strictEqual(await kv.setItem(keyName, "dark"), true);
+			assert.strictEqual(await kv.setItem(nestedKeyName, "blue"), true);
 			assert.strictEqual(await kv.getItem(keyName), "dark");
-			assert.strictEqual(store.get("auraflareKvMapFallback"), JSON.stringify({ theme: "dark" }));
+			assert.strictEqual(await kv.getItem(nestedKeyName), "blue");
+			assert.strictEqual(store.get("auraflareKvMapFallback"), JSON.stringify({ theme: "dark", preferences: { color: "blue" } }));
 			assert.strictEqual(await kv.removeItem(keyName), true);
-			assert.strictEqual(store.get("auraflareKvMapFallback"), JSON.stringify({}));
+			assert.strictEqual(await kv.removeItem(nestedKeyName), true);
+			assert.strictEqual(store.get("auraflareKvMapFallback"), JSON.stringify({ preferences: {} }));
+		});
+	});
+
+	it("falls back to normal plain-key behavior when no registered prefix matches", async () => {
+		await withMockStorage(async store => {
+			const kv = new KV();
+
+			assert.strictEqual(await kv.setItem("auraflareKvPlainFallback", 1), true);
+			assert.strictEqual(await kv.getItem("auraflareKvPlainFallback"), 1);
+			assert.strictEqual(store.get("auraflareKvPlainFallback"), "1");
+			assert.strictEqual(await kv.removeItem("auraflareKvPlainFallback"), true);
+			assert.strictEqual(store.has("auraflareKvPlainFallback"), false);
 		});
 	});
 
