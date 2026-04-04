@@ -54,8 +54,6 @@ import type { ClientOptions, RequestOptions } from "@auraflare/shared/Cloudflare
 
 - `KVNamespaceLike`
 - `KVInitOptions`
-- `KVListOptions`
-- `KVListResult`
 
 ```ts
 import { KV as Storage } from "@auraflare/shared/KV";
@@ -230,7 +228,6 @@ await storage.getItem(keyName, defaultValue);
 await storage.setItem(keyName, value);
 await storage.removeItem(keyName);
 await storage.clear();
-await storage.list({ prefix, limit, cursor });
 ```
 
 静态注册表模式下：
@@ -242,10 +239,7 @@ const storage = new Storage();
 
 await storage.setItem("@iRingo.Maps.Caches.a", { hello: true });
 await storage.getItem("@iRingo.Maps.Caches.a");
-await storage.getItem("@iRingo.Maps.Caches");
-await storage.getItem("@iRingo.Maps");
-await storage.list("@iRingo.Maps");
-await storage.clear("@iRingo.Maps.Caches");
+await storage.setItem("@iRingo.Maps.Caches", { b: true });
 ```
 
 ### Backend Priority
@@ -290,30 +284,28 @@ const storage = new Storage();
 
 - `@iRingo.Maps.Caches.a` -> namespace key `a`
 - `@iRingo.Maps.Caches.a.b` -> namespace key `a.b`
-- `getItem("@iRingo.Maps.Caches")` -> 返回该 namespace 全量键值对象
-- `getItem("@iRingo.Maps")` -> 返回 `{ Caches: { ... } }`
+- `setItem("@iRingo.Maps.Caches", { a: 1 })` -> 批量写入 namespace 顶层 key
 
 解析顺序：
 
 1. 精确注册前缀
 2. 最长 child 前缀命中
-3. parent 前缀聚合
+3. parent 前缀命中（仅用于阻止误回退到 legacy）
 4. 未命中映射时的 legacy `@root.path`
 5. 普通 plain key
 
 支持范围：
 
-- 精确注册前缀支持 `getItem` / `setItem` / `removeItem` / `clear` / `list`
-- 父前缀只支持 `getItem` / `list`
+- 精确注册前缀只支持 `setItem("@A.B.C", object)` 这种顶层批量写入
+- 父前缀不再支持聚合访问；命中后会直接抛错，避免误回退到 legacy
 - 注册前缀下的子 key 支持 `getItem` / `setItem` / `removeItem`
 
 补充说明：
 
 - 精确注册前缀的 `setItem("@A.B.C", object)` 采用合并模式，只写入 `object` 里的顶层 key，不会删除 namespace 中未提及的旧 key
-- 精确注册前缀的批量 `setItem` / `removeItem` / `clear` 采用尽力而为语义：单个 key 失败不会回滚其他已成功项，但方法会在存在失败时返回 `false`
-- 精确注册前缀与父前缀聚合的 `getItem` 也采用尽力而为语义：单个 key 读取失败时，其它成功项仍会返回，失败项只会从聚合结果中缺席
-- 父前缀上的 `setItem` / `removeItem` 会抛错
-- 任何聚合操作都依赖目标 namespace 提供 `list()`；如果绑定没有 `list()`，则仅 direct key 访问可用
+- `list()` 已移除；所有依赖枚举键的聚合操作也一并移除
+- `getItem("@A.B.C")`、`getItem("@A.B")`、`removeItem("@A.B.C")`、`clear("@A.B.C")` 这类依赖遍历 namespace 的调用现在会显式抛错
+- 父前缀上的 `setItem` / `removeItem` / `getItem` 会抛错
 - 多条注册前缀重叠时按最长前缀优先匹配
 - 同一前缀重复 `set()` 时以后写入的 namespace 为准
 - 空字符串前缀 `""` 会兜底未命中的普通 key，但不会抢走未命中映射时的 legacy `@root.path` 语义
@@ -360,19 +352,7 @@ await storage.removeItem("@settings.layout.sidebar");
 
 Legacy 模式下，`clear()` 仍为保守实现，固定返回 `false`，不会隐式批量清空 Cloudflare namespace。
 
-静态注册表模式下，`clear(keyName)` 只接受精确注册前缀，例如：
-
-```ts
-await storage.clear("@iRingo.Maps.Caches");
-```
-
-### `list()` Behavior
-
-- Legacy 模式继续使用 `list(options)`
-- 即使存在静态注册表，`list(options)` 仍然只走 legacy backend
-- 静态注册表模式使用 `list(keyName, options?)`
-- 精确注册前缀会直接透传到底层 namespace 的 `list()`
-- 父前缀会在本地聚合多个 namespace 的结果，并把 `name` 改写为相对逻辑路径，例如 `Caches.a`
+静态注册表模式下，`clear(keyName)` 已随 `list()` 相关聚合语义一起移除；传入参数时会显式抛错。
 
 ## Development
 

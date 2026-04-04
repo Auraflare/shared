@@ -60,7 +60,7 @@ const serialize = value => {
 	}
 };
 
-const createNamespace = (initialEntries = [], { withList = true, failPutKeys = [], failGetKeys = [], failDeleteKeys = [] } = {}) => {
+const createNamespace = (initialEntries = [], { failPutKeys = [], failGetKeys = [], failDeleteKeys = [] } = {}) => {
 	const store = new Map(initialEntries.map(([key, value]) => [key, serialize(value)]));
 	const calls = [];
 	const failPutKeySet = new Set(failPutKeys);
@@ -89,27 +89,12 @@ const createNamespace = (initialEntries = [], { withList = true, failPutKeys = [
 			store.delete(key);
 		},
 	};
-	if (withList) {
-		namespace.list = async (options = {}) => {
-			calls.push(["list", options]);
-			const keys = Array.from(store.keys())
-				.filter(key => !options.prefix || key.startsWith(options.prefix))
-				.map(name => ({ name }));
-			return {
-				keys,
-				list_complete: true,
-				cursor: "",
-			};
-		};
-	}
 	return {
 		namespace,
 		store,
 		calls,
 	};
 };
-
-const keyNames = result => result.keys.map(key => key.name).sort();
 
 describe("KV", () => {
 	beforeEach(() => {
@@ -120,7 +105,7 @@ describe("KV", () => {
 		KV.namespaces.clear();
 	});
 
-	it("uses namespace binding for read/write/list", async () => {
+	it("uses namespace binding for read/write", async () => {
 		const { namespace, calls } = createNamespace();
 		const kv = new KV({
 			namespaces: {
@@ -130,15 +115,15 @@ describe("KV", () => {
 
 		assert.strictEqual(await kv.setItem("plain", "value"), true);
 		assert.strictEqual(await kv.getItem("plain"), "value");
-		assert.deepStrictEqual(await kv.list({ prefix: "pl", limit: 10 }), {
-			keys: [{ name: "plain" }],
-			list_complete: true,
-			cursor: "",
-		});
 		assert.strictEqual(await kv.removeItem("plain"), true);
 		assert.strictEqual(await kv.getItem("plain", null), null);
 		assert.strictEqual(await kv.clear(), false);
-		assert.deepStrictEqual(calls[2], ["list", { prefix: "pl", limit: 10 }]);
+		assert.deepStrictEqual(calls, [
+			["put", "plain", "value"],
+			["get", "plain"],
+			["delete", "plain"],
+			["get", "plain"],
+		]);
 	});
 
 	it("uses the empty-prefix default namespace while preserving explicit prefixes and @path", async () => {
@@ -217,13 +202,6 @@ describe("KV", () => {
 				if (method === "DELETE" && parsed.pathname.endsWith("/values/plain")) {
 					return jsonResponse({ success: true, result: null });
 				}
-				if (method === "GET" && parsed.pathname.endsWith("/keys")) {
-					return jsonResponse({
-						success: true,
-						result: [{ name: "plain" }],
-						result_info: {},
-					});
-				}
 				throw new Error(`unexpected request: ${method} ${parsed.toString()}`);
 			},
 			async () => {
@@ -237,11 +215,6 @@ describe("KV", () => {
 				assert.strictEqual(await kv.setItem("plain", "value"), true);
 				assert.strictEqual(await kv.getItem("plain"), "value");
 				assert.strictEqual(await kv.removeItem("plain"), true);
-				assert.deepStrictEqual(await kv.list({ prefix: "pl", limit: 5, cursor: "next" }), {
-					keys: [{ name: "plain" }],
-					list_complete: true,
-					cursor: "",
-				});
 
 				assert.strictEqual(calls[0].method, "PUT");
 				assert.strictEqual(
@@ -250,15 +223,11 @@ describe("KV", () => {
 				);
 				assert.strictEqual(calls[1].method, "GET");
 				assert.strictEqual(calls[2].method, "DELETE");
-				assert.strictEqual(
-					calls[3].url,
-					"https://api.cloudflare.com/client/v4/accounts/account-id/storage/kv/namespaces/namespace-id/keys?prefix=pl&limit=5&cursor=next",
-				);
 			},
 		);
 	});
 
-	it("routes child keys to namespace root and aggregates exact prefixes", async () => {
+	it("routes child keys to namespace root and keeps exact writes available", async () => {
 		const { namespace, store } = createNamespace([["legacy", "keep"]]);
 		KV.namespaces.set("@iRingo.Maps.Caches", namespace);
 		const kv = new KV();
@@ -270,12 +239,10 @@ describe("KV", () => {
 		assert.strictEqual(store.get("a"), "value");
 		assert.strictEqual(store.get("b"), "true");
 		assert.strictEqual(store.get("nested"), JSON.stringify({ ok: 1 }));
-		assert.deepStrictEqual(await kv.getItem("@iRingo.Maps.Caches"), {
-			legacy: "keep",
-			a: "value",
-			b: true,
-			nested: { ok: 1 },
-		});
+		await assert.rejects(
+			() => kv.getItem("@iRingo.Maps.Caches"),
+			/no longer supports exact registered prefixes.*list\(\) removal/,
+		);
 
 		assert.strictEqual(await kv.removeItem("@iRingo.Maps.Caches.a"), true);
 		assert.strictEqual(store.has("a"), false);
@@ -298,63 +265,50 @@ describe("KV", () => {
 		assert.strictEqual(store.has("broken"), false);
 	});
 
-	it("allows partial success for exact prefix getItem reads", async () => {
+	it("rejects exact prefix aggregate reads after list removal", async () => {
 		const { namespace } = createNamespace([
 			["ok", 1],
 			["broken", 2],
-		], { failGetKeys: ["broken"] });
+		]);
 		KV.namespaces.set("@iRingo.Maps.Caches", namespace);
 		const kv = new KV();
 
-		assert.deepStrictEqual(await kv.getItem("@iRingo.Maps.Caches"), {
-			ok: 1,
-		});
+		await assert.rejects(
+			() => kv.getItem("@iRingo.Maps.Caches"),
+			/no longer supports exact registered prefixes.*list\(\) removal/,
+		);
 	});
 
-	it("allows partial success for exact prefix removeItem and clear", async () => {
-		const removeTarget = createNamespace([
+	it("rejects exact prefix bulk removeItem and clear after list removal", async () => {
+		const { namespace, store } = createNamespace([
 			["ok", 1],
 			["broken", 2],
-		], { failDeleteKeys: ["broken"] });
-		KV.namespaces.set("@iRingo.Maps.Caches", removeTarget.namespace);
+		]);
+		KV.namespaces.set("@iRingo.Maps.Caches", namespace);
 		const kv = new KV();
 
-		assert.strictEqual(await kv.removeItem("@iRingo.Maps.Caches"), false);
-		assert.strictEqual(removeTarget.store.has("ok"), false);
-		assert.strictEqual(removeTarget.store.has("broken"), true);
-
-		const clearTarget = createNamespace([
-			["a", true],
-			["broken", false],
-		], { failDeleteKeys: ["broken"] });
-		KV.namespaces.set("@iRingo.Maps.Caches", clearTarget.namespace);
-		const kv2 = new KV();
-
-		assert.strictEqual(await kv2.clear("@iRingo.Maps.Caches"), false);
-		assert.strictEqual(clearTarget.store.has("a"), false);
-		assert.strictEqual(clearTarget.store.has("broken"), true);
+		await assert.rejects(
+			() => kv.removeItem("@iRingo.Maps.Caches"),
+			/no longer supports exact registered prefixes.*list\(\) removal/,
+		);
+		await assert.rejects(
+			() => kv.clear("@iRingo.Maps.Caches"),
+			/no longer supports keyName arguments after list\(\) removal/,
+		);
+		assert.deepStrictEqual(Array.from(store.keys()).sort(), ["broken", "ok"]);
 	});
 
-	it("aggregates parent prefixes and rewrites list names", async () => {
+	it("rejects parent prefix aggregate access after list removal", async () => {
 		const caches = createNamespace([["a", 1], ["b", 2]]);
 		const settings = createNamespace([["theme", "dark"]]);
 		KV.namespaces.set("@iRingo.Maps.Caches", caches.namespace);
 		KV.namespaces.set("@iRingo.Maps.Settings", settings.namespace);
 		const kv = new KV();
 
-		assert.deepStrictEqual(await kv.getItem("@iRingo.Maps"), {
-			Caches: { a: 1, b: 2 },
-			Settings: { theme: "dark" },
-		});
-		assert.deepStrictEqual(keyNames(await kv.list("@iRingo.Maps")), [
-			"Caches.a",
-			"Caches.b",
-			"Settings.theme",
-		]);
-		assert.deepStrictEqual(keyNames(await kv.list("@iRingo", { prefix: "Maps.Caches" })), [
-			"Maps.Caches.a",
-			"Maps.Caches.b",
-		]);
+		await assert.rejects(
+			() => kv.getItem("@iRingo.Maps"),
+			/no longer supports parent registered prefixes.*list\(\) removal/,
+		);
 	});
 
 	it("uses longest prefix priority for overlapping registrations", async () => {
@@ -387,48 +341,33 @@ describe("KV", () => {
 		KV.namespaces.set("@iRingo.Maps.Caches", createNamespace().namespace);
 		const kv = new KV();
 
+		await assert.rejects(() => kv.getItem("@iRingo.Maps"), /parent registered prefixes.*list\(\) removal/);
 		await assert.rejects(() => kv.setItem("@iRingo.Maps", {}), /parent registered prefixes/);
-		await assert.rejects(() => kv.removeItem("@iRingo.Maps"), /parent registered prefixes/);
+		await assert.rejects(() => kv.removeItem("@iRingo.Maps"), /parent registered prefixes.*list\(\) removal/);
 	});
 
-	it("requires list support for exact aggregation while keeping child access available", async () => {
-		const { namespace } = createNamespace([["a", "value"]], { withList: false });
+	it("keeps child access available after removing list semantics", async () => {
+		const { namespace } = createNamespace([["a", "value"]]);
 		KV.namespaces.set("@iRingo.Maps.Caches", namespace);
 		const kv = new KV();
 
 		assert.strictEqual(await kv.getItem("@iRingo.Maps.Caches.a"), "value");
 		assert.strictEqual(await kv.setItem("@iRingo.Maps.Caches.b", true), true);
-		await assert.rejects(() => kv.getItem("@iRingo.Maps.Caches"), /namespace\.list\(\)/);
-		await assert.rejects(() => kv.list("@iRingo.Maps.Caches"), /namespace\.list\(\)/);
-		await assert.rejects(() => kv.removeItem("@iRingo.Maps.Caches"), /namespace\.list\(\)/);
-		await assert.rejects(() => kv.clear("@iRingo.Maps.Caches"), /namespace\.list\(\)/);
+		assert.strictEqual(await kv.getItem("@iRingo.Maps.Caches.b"), true);
+		await assert.rejects(() => kv.getItem("@iRingo.Maps.Caches"), /exact registered prefixes.*list\(\) removal/);
+		await assert.rejects(() => kv.removeItem("@iRingo.Maps.Caches"), /exact registered prefixes.*list\(\) removal/);
+		await assert.rejects(() => kv.clear("@iRingo.Maps.Caches"), /keyName arguments after list\(\) removal/);
 	});
 
-	it("clears exact registered prefixes and keeps clear() no-arg behavior", async () => {
+	it("keeps clear() no-arg behavior while rejecting keyName arguments", async () => {
 		const { namespace, store } = createNamespace([["a", 1], ["b", 2]]);
 		KV.namespaces.set("@iRingo.Maps.Caches", namespace);
 		const kv = new KV();
 
 		assert.strictEqual(await kv.clear(), false);
-		await assert.rejects(() => kv.clear("@iRingo.Maps"), /exact registered prefix/);
-		assert.strictEqual(await kv.clear("@iRingo.Maps.Caches"), true);
-		assert.deepStrictEqual(Array.from(store.keys()), []);
-	});
-
-	it("keeps list(options) on legacy backend even when namespaces are registered", async () => {
-		const legacy = createNamespace([["plain", "value"]]);
-		KV.namespaces.set("@iRingo.Maps.Caches", createNamespace([["a", 1]]).namespace);
-		const kv = new KV({
-			namespaces: {
-				"": legacy.namespace,
-			},
-		});
-
-		assert.deepStrictEqual(await kv.list({ prefix: "pl" }), {
-			keys: [{ name: "plain" }],
-			list_complete: true,
-			cursor: "",
-		});
+		await assert.rejects(() => kv.clear("@iRingo.Maps"), /keyName arguments after list\(\) removal/);
+		await assert.rejects(() => kv.clear("@iRingo.Maps.Caches"), /keyName arguments after list\(\) removal/);
+		assert.deepStrictEqual(Array.from(store.keys()).sort(), ["a", "b"]);
 	});
 
 	it("falls back to legacy @path behavior when no registered prefix matches", async () => {
@@ -460,8 +399,4 @@ describe("KV", () => {
 		});
 	});
 
-	it("throws on list when no namespace and no Cloudflare backend", async () => {
-		const kv = new KV();
-		await assert.rejects(() => kv.list(), /default namespace binding in namespaces\[""\] or a Cloudflare KV backend/);
-	});
 });
