@@ -60,6 +60,9 @@ import type { ClientOptions, RequestOptions } from "@auraflare/shared/Cloudflare
 ```ts
 import { KV as Storage } from "@auraflare/shared/KV";
 import type { KVInitOptions, KVNamespaceLike } from "@auraflare/shared/KV";
+
+Storage.namespaces.set("@iRingo.Maps.Caches", env.Maps);
+Storage.namespaces.set("", env.DefaultKV);
 ```
 
 ## Cloudflare Client
@@ -230,21 +233,87 @@ await storage.clear();
 await storage.list({ prefix, limit, cursor });
 ```
 
+静态注册表模式下：
+
+```ts
+Storage.namespaces.set("@iRingo.Maps.Caches", env.Maps);
+
+const storage = new Storage();
+
+await storage.setItem("@iRingo.Maps.Caches.a", { hello: true });
+await storage.getItem("@iRingo.Maps.Caches.a");
+await storage.getItem("@iRingo.Maps.Caches");
+await storage.getItem("@iRingo.Maps");
+await storage.list("@iRingo.Maps");
+await storage.clear("@iRingo.Maps.Caches");
+```
+
 ### Backend Priority
 
 固定优先级：
 
-1. `namespace` (`new Storage(namespace)` / `new Storage({ namespace })` / `new Storage({ env: { namespace } })`)
-2. 显式传入的 `client` + `account_id` + `namespace_id`
-3. 认证参数 + `account_id` + `namespace_id`（内部创建 `Cloudflare`）
-4. `@nsnanocat/util` 的 `Storage`
+1. `init.namespaces` / `init.env.namespaces`（实例级映射，构造时合并；`""` 前缀代表默认 namespace）
+2. 静态注册表（`Storage.namespaces.set("@A.B.C", env.KV)`，构造时复制到实例；`Storage.namespaces.set("", env.KV)` 可注册默认 namespace）
+3. 显式传入的 `client` + `account_id` + `namespace_id`
+4. 认证参数 + `account_id` + `namespace_id`（内部创建 `Cloudflare`）
+5. `@nsnanocat/util` 的 `Storage`
+
+迁移说明：
+
+- `new Storage(namespace)` 已移除，改为 `new Storage({ namespaces: { "": namespace } })`
+- `new Storage({ namespace })` 已移除，改为 `new Storage({ namespaces: { "": namespace } })`
+- `new Storage({ env: { namespace } })` 已移除，改为 `new Storage({ env: { namespaces: { "": namespace } } })`
+
+也可以直接在构造参数里传实例级映射：
+
+```ts
+const storage = new Storage({
+	namespaces: {
+		"": env.DEFAULT_KV,
+		"@iRingo.Maps.Caches": env.MAPS_KV,
+	},
+});
+```
+
+### Static Namespace Registry
+
+`Storage.namespaces` 是静态 `Map<string, KVNamespaceLike>`。构造 `Storage` 时，会先复制它，再合并 `init.namespaces`。空字符串前缀 `""` 代表实例级默认 namespace 兜底。命中映射后，前缀后的剩余部分会被直接当成 namespace 的真实 key，不再继续做 `@root.path` 拆分。
+
+例如：
+
+```ts
+Storage.namespaces.set("", env.DEFAULT_KV);
+Storage.namespaces.set("@iRingo.Maps.Caches", env.MAPS_KV);
+
+const storage = new Storage();
+```
+
+- `@iRingo.Maps.Caches.a` -> namespace key `a`
+- `@iRingo.Maps.Caches.a.b` -> namespace key `a.b`
+- `getItem("@iRingo.Maps.Caches")` -> 返回该 namespace 全量键值对象
+- `getItem("@iRingo.Maps")` -> 返回 `{ Caches: { ... } }`
+
+支持范围：
+
+- 精确注册前缀支持 `getItem` / `setItem` / `removeItem` / `clear` / `list`
+- 父前缀只支持 `getItem` / `list`
+- 注册前缀下的子 key 支持 `getItem` / `setItem` / `removeItem`
+
+补充说明：
+
+- 精确注册前缀的 `setItem("@A.B.C", object)` 采用合并模式，只写入 `object` 里的顶层 key，不会删除 namespace 中未提及的旧 key
+- 父前缀上的 `setItem` / `removeItem` 会抛错
+- 任何聚合操作都依赖目标 namespace 提供 `list()`；如果绑定没有 `list()`，则仅 direct key 访问可用
+- 多条注册前缀重叠时按最长前缀优先匹配
+- 同一前缀重复 `set()` 时以后写入的 namespace 为准
+- 空字符串前缀 `""` 会兜底未命中的普通 key，但不会抢走未命中映射时的 legacy `@root.path` 语义
 
 ### Worker Namespace Example
 
 ```ts
 const storage = new Storage({
-	env: {
-		namespace: env.SETTINGS_KV,
+	namespaces: {
+		"": env.SETTINGS_KV,
 	},
 });
 
@@ -267,7 +336,7 @@ const value = await storage.getItem("feature-x", false);
 
 ### Path Key Support
 
-支持 `@root.path` 形式：
+未命中映射时，仍支持 `@root.path` 形式：
 
 ```ts
 await storage.setItem("@settings.theme", "dark");
@@ -279,7 +348,21 @@ await storage.removeItem("@settings.layout.sidebar");
 
 ### `clear()` Behavior
 
-`clear()` 当前为保守实现，固定返回 `false`，不会隐式批量清空 Cloudflare namespace。
+Legacy 模式下，`clear()` 仍为保守实现，固定返回 `false`，不会隐式批量清空 Cloudflare namespace。
+
+静态注册表模式下，`clear(keyName)` 只接受精确注册前缀，例如：
+
+```ts
+await storage.clear("@iRingo.Maps.Caches");
+```
+
+### `list()` Behavior
+
+- Legacy 模式继续使用 `list(options)`
+- 即使存在静态注册表，`list(options)` 仍然只走 legacy backend
+- 静态注册表模式使用 `list(keyName, options?)`
+- 精确注册前缀会直接透传到底层 namespace 的 `list()`
+- 父前缀会在本地聚合多个 namespace 的结果，并把 `name` 改写为相对逻辑路径，例如 `Caches.a`
 
 ## Development
 
