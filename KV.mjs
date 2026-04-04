@@ -140,13 +140,13 @@ export class KV {
 		const route = this.#resolveNamespaceRoute(keyName);
 		switch (route.kind) {
 			case "child": {
-				const keyValue = deserialize(await route.entry.namespace.get(route.keyName));
+				const keyValue = deserialize(await route.entry.namespaceBinding.get(route.resolvedKeyName));
 				return keyValue ?? defaultValue;
 			}
 			case "exact": {
-				const keys = await this.#listAllNamespacedKeys(route.entry, `KV.getItem(${JSON.stringify(route.entry.prefix)})`);
+				const keys = await this.#listAllNamespacedKeys(route.entry, `KV.getItem(${JSON.stringify(route.entry.registeredPrefix)})`);
 				const settledValues = await Promise.allSettled(
-					keys.map(async key => [key.name, deserialize(await route.entry.namespace.get(key.name))]),
+					keys.map(async key => [key.name, deserialize(await route.entry.namespaceBinding.get(key.name))]),
 				);
 				const values = settledValues
 					.filter(result => result.status === "fulfilled")
@@ -156,40 +156,36 @@ export class KV {
 			case "parent": {
 				const value = {};
 				for (const entry of route.entries) {
-					const keys = await this.#listAllNamespacedKeys(entry, `KV.getItem(${JSON.stringify(entry.prefix)})`);
+					const keys = await this.#listAllNamespacedKeys(entry, `KV.getItem(${JSON.stringify(entry.registeredPrefix)})`);
 					const settledValues = await Promise.allSettled(
-						keys.map(async key => [key.name, deserialize(await entry.namespace.get(key.name))]),
+						keys.map(async key => [key.name, deserialize(await entry.namespaceBinding.get(key.name))]),
 					);
 					const values = settledValues
 						.filter(result => result.status === "fulfilled")
 						.map(result => result.value);
-					_.set(value, entry.prefix.slice(route.logicalKeyName.length + 1), Object.fromEntries(values));
+					_.set(value, entry.registeredPrefix.slice(route.originalKeyName.length + 1), Object.fromEntries(values));
 				}
 				return value;
 			}
-			default:
-				break;
-		}
-
-		let keyValue = defaultValue;
-		switch (route.keyName.startsWith("@")) {
-			case true: {
-				const { key, path } = route.keyName.match(KV.#nameRegex)?.groups ?? {};
-				const rootKeyName = key ?? route.keyName;
-				let value = await this.getItem(rootKeyName, {});
-				if (typeof value !== "object" || value === null) {
-					value = {};
+			case "legacy": {
+				let keyValue = defaultValue;
+				if (route.originalKeyName.startsWith("@")) {
+					const { key, path } = route.originalKeyName.match(KV.#nameRegex)?.groups ?? {};
+					const rootKeyName = key ?? route.originalKeyName;
+					let value = await this.getItem(rootKeyName, {});
+					if (typeof value !== "object" || value === null) {
+						value = {};
+					}
+					keyValue = _.get(value, path);
+					keyValue = deserialize(keyValue);
+					return keyValue ?? defaultValue;
 				}
-				keyValue = _.get(value, path);
-				keyValue = deserialize(keyValue);
-				break;
-			}
-			default:
+
 				// The empty-string prefix is the default namespace fallback for plain keys.
 				const defaultNamespace = this.namespaces.get("");
 				switch (true) {
 					case typeof defaultNamespace !== "undefined":
-						keyValue = await defaultNamespace.get(route.keyName);
+						keyValue = await defaultNamespace.get(route.originalKeyName);
 						break;
 					// Check whether the Cloudflare REST KV backend is fully configured.
 					case Boolean(this.client && this.account_id && this.namespace_id): {
@@ -197,7 +193,7 @@ export class KV {
 							account_id: this.account_id,
 						};
 						try {
-							const response = await this.client.kv.namespaces.values.get(this.namespace_id, route.keyName, params);
+							const response = await this.client.kv.namespaces.values.get(this.namespace_id, route.originalKeyName, params);
 							switch (response.status) {
 								case 404:
 									keyValue = null;
@@ -228,13 +224,13 @@ export class KV {
 						break;
 					}
 					default:
-						keyValue = Storage.getItem(route.keyName, defaultValue);
+						keyValue = Storage.getItem(route.originalKeyName, defaultValue);
 						break;
 				}
 				keyValue = deserialize(keyValue);
-				break;
+				return keyValue ?? defaultValue;
+			}
 		}
-		return keyValue ?? defaultValue;
 	}
 
 	/**
@@ -249,44 +245,40 @@ export class KV {
 		const route = this.#resolveNamespaceRoute(keyName);
 		switch (route.kind) {
 			case "child":
-				await route.entry.namespace.put(route.keyName, serialize(keyValue));
+				await route.entry.namespaceBinding.put(route.resolvedKeyName, serialize(keyValue));
 				return true;
 			case "exact": {
 				if (!keyValue || typeof keyValue !== "object" || Array.isArray(keyValue)) {
-					throw new TypeError(`KV.setItem(${JSON.stringify(route.logicalKeyName)}) requires an object value for exact registered prefixes in KV.namespaces.`);
+					throw new TypeError(`KV.setItem(${JSON.stringify(route.originalKeyName)}) requires an object value for exact registered prefixes in KV.namespaces.`);
 				}
 				const results = await Promise.allSettled(
 					Object.entries(keyValue).map(async ([name, value]) => {
-						await route.entry.namespace.put(name, serialize(value));
+						await route.entry.namespaceBinding.put(name, serialize(value));
 					}),
 				);
 				return results.every(result => result.status === "fulfilled");
 			}
 			case "parent":
-				throw new TypeError(`KV.setItem(${JSON.stringify(route.logicalKeyName)}) does not support parent registered prefixes in KV.namespaces.`);
-			default:
-				break;
-		}
-
-		let result = false;
-		const serializedValue = serialize(keyValue);
-		switch (route.keyName.startsWith("@")) {
-			case true: {
-				const { key, path } = route.keyName.match(KV.#nameRegex)?.groups ?? {};
-				const rootKeyName = key ?? route.keyName;
-				let value = await this.getItem(rootKeyName, {});
-				if (typeof value !== "object" || value === null) {
-					value = {};
+				throw new TypeError(`KV.setItem(${JSON.stringify(route.originalKeyName)}) does not support parent registered prefixes in KV.namespaces.`);
+			case "legacy": {
+				let result = false;
+				const serializedValue = serialize(keyValue);
+				if (route.originalKeyName.startsWith("@")) {
+					const { key, path } = route.originalKeyName.match(KV.#nameRegex)?.groups ?? {};
+					const rootKeyName = key ?? route.originalKeyName;
+					let value = await this.getItem(rootKeyName, {});
+					if (typeof value !== "object" || value === null) {
+						value = {};
+					}
+					_.set(value, path, serializedValue);
+					result = await this.setItem(rootKeyName, value);
+					return result;
 				}
-				_.set(value, path, serializedValue);
-				result = await this.setItem(rootKeyName, value);
-				break;
-			}
-			default:
+
 				const defaultNamespace = this.namespaces.get("");
 				switch (true) {
 					case typeof defaultNamespace !== "undefined":
-						await defaultNamespace.put(route.keyName, serializedValue);
+						await defaultNamespace.put(route.originalKeyName, serializedValue);
 						result = true;
 						break;
 					// Check whether the Cloudflare REST KV backend is fully configured.
@@ -295,17 +287,17 @@ export class KV {
 							account_id: this.account_id,
 							value: serializedValue,
 						};
-						await this.client.kv.namespaces.values.update(this.namespace_id, route.keyName, params);
+						await this.client.kv.namespaces.values.update(this.namespace_id, route.originalKeyName, params);
 						result = true;
 						break;
 					}
 					default:
-						result = Storage.setItem(route.keyName, serializedValue);
+						result = Storage.setItem(route.originalKeyName, serializedValue);
 						break;
 				}
-				break;
+				return result;
+			}
 		}
-		return result;
 	}
 
 	/**
@@ -319,37 +311,33 @@ export class KV {
 		const route = this.#resolveNamespaceRoute(keyName);
 		switch (route.kind) {
 			case "child":
-				await route.entry.namespace.delete(route.keyName);
+				await route.entry.namespaceBinding.delete(route.resolvedKeyName);
 				return true;
 			case "exact": {
-				const keys = await this.#listAllNamespacedKeys(route.entry, `KV.clear(${JSON.stringify(route.logicalKeyName)})`);
-				const results = await Promise.allSettled(keys.map(async key => await route.entry.namespace.delete(key.name)));
+				const keys = await this.#listAllNamespacedKeys(route.entry, `KV.clear(${JSON.stringify(route.originalKeyName)})`);
+				const results = await Promise.allSettled(keys.map(async key => await route.entry.namespaceBinding.delete(key.name)));
 				return results.every(result => result.status === "fulfilled");
 			}
 			case "parent":
-				throw new TypeError(`KV.removeItem(${JSON.stringify(route.logicalKeyName)}) does not support parent registered prefixes in KV.namespaces.`);
-			default:
-				break;
-		}
-
-		let result = false;
-		switch (route.keyName.startsWith("@")) {
-			case true: {
-				const { key, path } = route.keyName.match(KV.#nameRegex)?.groups ?? {};
-				const rootKeyName = key ?? route.keyName;
-				let value = await this.getItem(rootKeyName, {});
-				if (typeof value !== "object" || value === null) {
-					value = {};
+				throw new TypeError(`KV.removeItem(${JSON.stringify(route.originalKeyName)}) does not support parent registered prefixes in KV.namespaces.`);
+			case "legacy": {
+				let result = false;
+				if (route.originalKeyName.startsWith("@")) {
+					const { key, path } = route.originalKeyName.match(KV.#nameRegex)?.groups ?? {};
+					const rootKeyName = key ?? route.originalKeyName;
+					let value = await this.getItem(rootKeyName, {});
+					if (typeof value !== "object" || value === null) {
+						value = {};
+					}
+					_.unset(value, path);
+					result = await this.setItem(rootKeyName, value);
+					return result;
 				}
-				_.unset(value, path);
-				result = await this.setItem(rootKeyName, value);
-				break;
-			}
-			default:
+
 				const defaultNamespace = this.namespaces.get("");
 				switch (true) {
 					case typeof defaultNamespace !== "undefined":
-						await defaultNamespace.delete(route.keyName);
+						await defaultNamespace.delete(route.originalKeyName);
 						result = true;
 						break;
 					// Check whether the Cloudflare REST KV backend is fully configured.
@@ -357,17 +345,17 @@ export class KV {
 						const params = {
 							account_id: this.account_id,
 						};
-						await this.client.kv.namespaces.values.delete(this.namespace_id, route.keyName, params);
+						await this.client.kv.namespaces.values.delete(this.namespace_id, route.originalKeyName, params);
 						result = true;
 						break;
 					}
 					default:
-						result = Storage.removeItem(route.keyName);
+						result = Storage.removeItem(route.originalKeyName);
 						break;
 				}
-				break;
+				return result;
+			}
 		}
-		return result;
 	}
 
 	/**
@@ -388,8 +376,8 @@ export class KV {
 		if (route.kind !== "exact") {
 			throw new TypeError(`KV.clear(${JSON.stringify(keyName)}) requires an exact registered prefix in KV.namespaces.`);
 		}
-		const keys = await this.#listAllNamespacedKeys(route.entry, `KV.clear(${JSON.stringify(route.logicalKeyName)})`);
-		const results = await Promise.allSettled(keys.map(async key => await route.entry.namespace.delete(key.name)));
+		const keys = await this.#listAllNamespacedKeys(route.entry, `KV.clear(${JSON.stringify(route.originalKeyName)})`);
+		const results = await Promise.allSettled(keys.map(async key => await route.entry.namespaceBinding.delete(key.name)));
 		return results.every(result => result.status === "fulfilled");
 	}
 
@@ -409,15 +397,15 @@ export class KV {
 			const route = this.#resolveNamespaceRoute(keyNameOrOptions);
 			switch (route.kind) {
 				case "exact":
-					if (typeof route.entry.namespace.list !== "function") {
-						throw new TypeError(`KV.list(${JSON.stringify(route.entry.prefix)}) requires namespace.list() for registered prefix ${JSON.stringify(route.entry.prefix)}.`);
+					if (typeof route.entry.namespaceBinding.list !== "function") {
+						throw new TypeError(`KV.list(${JSON.stringify(route.entry.registeredPrefix)}) requires namespace.list() for registered prefix ${JSON.stringify(route.entry.registeredPrefix)}.`);
 					}
-					return await route.entry.namespace.list(options);
+					return await route.entry.namespaceBinding.list(options);
 				case "parent": {
 					const keysByName = new Map();
 					for (const entry of route.entries) {
-						const relativePath = entry.prefix.slice(route.logicalKeyName.length + 1);
-						const keys = await this.#listAllNamespacedKeys(entry, `KV.list(${JSON.stringify(route.logicalKeyName)})`);
+						const relativePath = entry.registeredPrefix.slice(route.originalKeyName.length + 1);
+						const keys = await this.#listAllNamespacedKeys(entry, `KV.list(${JSON.stringify(route.originalKeyName)})`);
 						for (const key of keys) {
 							const name = relativePath ? `${relativePath}.${key.name}` : key.name;
 							if (options.prefix && !name.startsWith(options.prefix)) {
@@ -436,9 +424,9 @@ export class KV {
 					};
 				}
 				case "child":
-					throw new TypeError(`KV.list(${JSON.stringify(route.logicalKeyName)}) does not support child keys registered in KV.namespaces.`);
-				default:
-					throw new TypeError(`KV.list(${JSON.stringify(keyNameOrOptions)}) requires an exact or parent registered prefix in KV.namespaces.`);
+					throw new TypeError(`KV.list(${JSON.stringify(route.originalKeyName)}) does not support child keys registered in KV.namespaces.`);
+				case "legacy":
+					throw new TypeError(`KV.list(${JSON.stringify(route.originalKeyName)}) requires an exact or parent registered prefix in KV.namespaces.`);
 			}
 		}
 
@@ -480,35 +468,37 @@ export class KV {
 	 * 3. `prefix.startsWith(keyName + ".")` 的父前缀聚合 / parent-prefix aggregation
 	 * 4. 未命中时返回 legacy / legacy fallback when unmatched
 	 *
-	 * child 命中后会切掉前缀和分隔点，只保留后缀作为真实 keyName。
-	 * After a child match, the prefix and separator are removed and only the suffix is kept as the real keyName.
+	 * 返回值中的 `originalKeyName` 始终保留调用方原始输入；只有 child 路由会额外给出 `resolvedKeyName`，用于指出实际传给命中 namespace 绑定的 key。
+	 * The returned `originalKeyName` always keeps the caller's original input; only the child route adds `resolvedKeyName` to indicate the actual key passed to the matched namespace binding.
 	 *
-	 * @param {string} keyName 传入的逻辑键 / Incoming logical key.
-	 * @returns {{ kind: "legacy", logicalKeyName: string, keyName: string } | { kind: "exact", logicalKeyName: string, keyName: string, entry: { prefix: string, namespace: import("./KV.d.ts").KVNamespaceLike } } | { kind: "child", logicalKeyName: string, keyName: string, entry: { prefix: string, namespace: import("./KV.d.ts").KVNamespaceLike } } | { kind: "parent", logicalKeyName: string, keyName: string, entries: Array<{ prefix: string, namespace: import("./KV.d.ts").KVNamespaceLike }> }}
+	 * `entry` / `entries` 只表示 `namespaces` 中命中的注册项，也就是“该使用哪个绑定对象”；它们不直接表示最终读写的 KV key。
+	 * `entry` / `entries` only represent matched registrations from `namespaces`, meaning "which binding object to use"; they do not directly represent the final KV keys being read or written.
+	 *
+	 * @param {string} keyName 传入的原始键名 / Incoming original key name.
+	 * @returns {{ kind: "legacy", originalKeyName: string } | { kind: "exact", originalKeyName: string, entry: { registeredPrefix: string, namespaceBinding: import("./KV.d.ts").KVNamespaceLike } } | { kind: "child", originalKeyName: string, resolvedKeyName: string, entry: { registeredPrefix: string, namespaceBinding: import("./KV.d.ts").KVNamespaceLike } } | { kind: "parent", originalKeyName: string, entries: Array<{ registeredPrefix: string, namespaceBinding: import("./KV.d.ts").KVNamespaceLike }> }}
 	 */
 	#resolveNamespaceRoute(keyName) {
 		const exactNamespace = this.namespaces.get(keyName);
 		if (typeof exactNamespace !== "undefined") {
 			return {
 				kind: "exact",
-				logicalKeyName: keyName,
-				keyName,
+				originalKeyName: keyName,
 				entry: {
-					prefix: keyName,
-					namespace: exactNamespace,
+					registeredPrefix: keyName,
+					namespaceBinding: exactNamespace,
 				},
 			};
 		}
 
 		const childEntries = [];
 		const parentEntries = [];
-		for (const [prefix, namespace] of this.namespaces) {
-			const isChildPrefix = prefix === "" ? !keyName.startsWith("@") : keyName.startsWith(`${prefix}.`);
-			const isParentPrefix = prefix.startsWith(`${keyName}.`);
+		for (const [registeredPrefix, namespaceBinding] of this.namespaces) {
+			const isChildPrefix = registeredPrefix === "" ? !keyName.startsWith("@") : keyName.startsWith(`${registeredPrefix}.`);
+			const isParentPrefix = registeredPrefix.startsWith(`${keyName}.`);
 			if (!isChildPrefix && !isParentPrefix) {
 				continue;
 			}
-			const entry = { prefix, namespace };
+			const entry = { registeredPrefix, namespaceBinding };
 			if (isChildPrefix) {
 				childEntries.push(entry);
 			}
@@ -519,15 +509,15 @@ export class KV {
 
 		if (childEntries.length) {
 			const entry = [...childEntries].sort((a, b) => {
-				if (a.prefix.length !== b.prefix.length) {
-					return b.prefix.length - a.prefix.length;
+				if (a.registeredPrefix.length !== b.registeredPrefix.length) {
+					return b.registeredPrefix.length - a.registeredPrefix.length;
 				}
-				return a.prefix.localeCompare(b.prefix);
+				return a.registeredPrefix.localeCompare(b.registeredPrefix);
 			})[0];
 			return {
 				kind: "child",
-				logicalKeyName: keyName,
-				keyName: entry.prefix ? keyName.slice(entry.prefix.length + 1) : keyName,
+				originalKeyName: keyName,
+				resolvedKeyName: entry.registeredPrefix ? keyName.slice(entry.registeredPrefix.length + 1) : keyName,
 				entry,
 			};
 		}
@@ -535,21 +525,19 @@ export class KV {
 		if (parentEntries.length) {
 			return {
 				kind: "parent",
-				logicalKeyName: keyName,
-				keyName,
+				originalKeyName: keyName,
 				entries: [...parentEntries].sort((a, b) => {
-					if (a.prefix.length !== b.prefix.length) {
-						return a.prefix.length - b.prefix.length;
+					if (a.registeredPrefix.length !== b.registeredPrefix.length) {
+						return a.registeredPrefix.length - b.registeredPrefix.length;
 					}
-					return a.prefix.localeCompare(b.prefix);
+					return a.registeredPrefix.localeCompare(b.registeredPrefix);
 				}),
 			};
 		}
 
 		return {
 			kind: "legacy",
-			logicalKeyName: keyName,
-			keyName,
+			originalKeyName: keyName,
 		};
 	}
 
@@ -557,19 +545,19 @@ export class KV {
 	 * 分页拉取某个注册 namespace 的全部键。
 	 * Fetch all keys from a registered namespace across pages.
 	 *
-	 * @param {{ prefix: string, namespace: import("./KV.d.ts").KVNamespaceLike }} entry 注册前缀条目 / Registered prefix entry.
+	 * @param {{ registeredPrefix: string, namespaceBinding: import("./KV.d.ts").KVNamespaceLike }} entry 命中的注册项；`registeredPrefix` 用于报错信息，`namespaceBinding` 用于实际 list 读取。 / Matched registration entry; `registeredPrefix` is used in error messages and `namespaceBinding` is used for the actual list reads.
 	 * @param {string} operation 报错时使用的操作名 / Operation name used in errors.
 	 * @returns {Promise<Array<{ name: string, expiration?: number, metadata?: unknown }>>}
 	 */
 	async #listAllNamespacedKeys(entry, operation) {
-		if (typeof entry.namespace.list !== "function") {
-			throw new TypeError(`${operation} requires namespace.list() for registered prefix ${JSON.stringify(entry.prefix)}.`);
+		if (typeof entry.namespaceBinding.list !== "function") {
+			throw new TypeError(`${operation} requires namespace.list() for registered prefix ${JSON.stringify(entry.registeredPrefix)}.`);
 		}
 		const keys = [];
 		const seenCursors = new Set();
 		let cursor;
 		while (true) {
-			const result = await entry.namespace.list({ cursor });
+			const result = await entry.namespaceBinding.list({ cursor });
 			keys.push(...result.keys);
 			if (result.list_complete || !result.cursor || seenCursors.has(result.cursor)) {
 				break;
