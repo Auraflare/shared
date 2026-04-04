@@ -140,7 +140,7 @@ export class KV {
 		const route = this.#resolveNamespaceRoute(keyName);
 		switch (route.kind) {
 			case "child": {
-				const keyValue = deserialize(await route.entry.namespaceBinding.get(route.resolvedKeyName));
+				const keyValue = deserialize(await route.entry.namespaceBinding.get(route.entry.relativePath));
 				return keyValue ?? defaultValue;
 			}
 			case "exact": {
@@ -163,7 +163,7 @@ export class KV {
 					const values = settledValues
 						.filter(result => result.status === "fulfilled")
 						.map(result => result.value);
-					_.set(value, entry.registeredPrefix.replace(`${route.originalKeyName}.`, ""), Object.fromEntries(values));
+					_.set(value, entry.relativePath, Object.fromEntries(values));
 				}
 				return value;
 			}
@@ -244,7 +244,7 @@ export class KV {
 		const route = this.#resolveNamespaceRoute(keyName);
 		switch (route.kind) {
 			case "child":
-				await route.entry.namespaceBinding.put(route.resolvedKeyName, serialize(keyValue));
+				await route.entry.namespaceBinding.put(route.entry.relativePath, serialize(keyValue));
 				return true;
 			case "exact": {
 				if (!keyValue || typeof keyValue !== "object" || Array.isArray(keyValue)) {
@@ -310,7 +310,7 @@ export class KV {
 		const route = this.#resolveNamespaceRoute(keyName);
 		switch (route.kind) {
 			case "child":
-				await route.entry.namespaceBinding.delete(route.resolvedKeyName);
+				await route.entry.namespaceBinding.delete(route.entry.relativePath);
 				return true;
 			case "exact": {
 				const keys = await this.#listAllNamespacedKeys(route.entry, `KV.clear(${JSON.stringify(route.originalKeyName)})`);
@@ -402,10 +402,9 @@ export class KV {
 				case "parent": {
 					const keysByName = new Map();
 					for (const entry of route.entries) {
-						const relativePath = entry.registeredPrefix.replace(`${route.originalKeyName}.`, "");
 						const keys = await this.#listAllNamespacedKeys(entry, `KV.list(${JSON.stringify(route.originalKeyName)})`);
 						for (const key of keys) {
-							const name = relativePath ? `${relativePath}.${key.name}` : key.name;
+							const name = entry.relativePath ? `${entry.relativePath}.${key.name}` : key.name;
 							if (options.prefix && !name.startsWith(options.prefix)) {
 								continue;
 							}
@@ -477,14 +476,14 @@ export class KV {
 	 * 4. 未命中但 regex 命中返回 `legacy`。 / Unmatched keys with a regex hit return `legacy`.
 	 * 5. 其余情况返回 `normal`。 / All remaining unmatched keys return `normal`.
 	 *
-	 * 返回值中的 `originalKeyName` 始终保留调用方原始输入；只有 child 路由会额外给出 `resolvedKeyName`，而 legacy 路由会额外给出 `rootKeyName` / `path`，用于指出后续 `@path` 读改写实际操作的根 key 与属性路径。
-	 * The returned `originalKeyName` always keeps the caller's original input; only the child route adds `resolvedKeyName`, while the legacy route adds `rootKeyName` / `path` to indicate the root key and property path used by subsequent `@path` read-modify-write operations.
+	 * 返回值中的 `originalKeyName` 始终保留调用方原始输入；child 与 parent 路由都会把剩余路径收敛到 entry 的 `relativePath`，legacy 路由则额外给出 `rootKeyName` / `path`，用于指出后续 `@path` 读改写实际操作的根 key 与属性路径。
+	 * The returned `originalKeyName` always keeps the caller's original input; both child and parent routes converge their remaining paths into each entry's `relativePath`, while the legacy route adds `rootKeyName` / `path` to indicate the root key and property path used by subsequent `@path` read-modify-write operations.
 	 *
 	 * `entry` / `entries` 只表示 `namespaces` 中命中的注册项，也就是“该使用哪个绑定对象”；它们不直接表示最终读写的 KV key。
 	 * `entry` / `entries` only represent matched registrations from `namespaces`, meaning "which binding object to use"; they do not directly represent the final KV keys being read or written.
 	 *
 	 * @param {string} keyName 传入的原始键名 / Incoming original key name.
-	 * @returns {{ kind: "legacy", originalKeyName: string, rootKeyName: string, path?: string } | { kind: "normal", originalKeyName: string } | { kind: "exact", originalKeyName: string, entry: { registeredPrefix: string, namespaceBinding: import("./KV.d.ts").KVNamespaceLike } } | { kind: "child", originalKeyName: string, resolvedKeyName: string, entry: { registeredPrefix: string, namespaceBinding: import("./KV.d.ts").KVNamespaceLike } } | { kind: "parent", originalKeyName: string, entries: Array<{ registeredPrefix: string, namespaceBinding: import("./KV.d.ts").KVNamespaceLike }> }}
+	 * @returns {{ kind: "legacy", originalKeyName: string, rootKeyName: string, path?: string } | { kind: "normal", originalKeyName: string } | { kind: "exact", originalKeyName: string, entry: { registeredPrefix: string, namespaceBinding: import("./KV.d.ts").KVNamespaceLike } } | { kind: "child", originalKeyName: string, entry: { registeredPrefix: string, namespaceBinding: import("./KV.d.ts").KVNamespaceLike, relativePath: string } } | { kind: "parent", originalKeyName: string, entries: Array<{ registeredPrefix: string, namespaceBinding: import("./KV.d.ts").KVNamespaceLike, relativePath: string }> }}
 	 */
 	#resolveNamespaceRoute(keyName) {
 		// 第一步：先做精确命中，命中后直接返回。
@@ -514,6 +513,7 @@ export class KV {
 					childEntry = {
 						registeredPrefix: prefix,
 						namespaceBinding: binding,
+						relativePath: keyName,
 					};
 				}
 				continue;
@@ -526,17 +526,24 @@ export class KV {
 			}
 			const entry = { registeredPrefix: prefix, namespaceBinding: binding };
 			if (isChildPrefix) {
+				const childCandidate = {
+					...entry,
+					relativePath: keyName.replace(`${prefix}.`, ""),
+				};
 				if (
 					typeof childEntry === "undefined" ||
-					entry.registeredPrefix.length > childEntry.registeredPrefix.length ||
-					(entry.registeredPrefix.length === childEntry.registeredPrefix.length &&
-						entry.registeredPrefix.localeCompare(childEntry.registeredPrefix) < 0)
+					childCandidate.registeredPrefix.length > childEntry.registeredPrefix.length ||
+					(childCandidate.registeredPrefix.length === childEntry.registeredPrefix.length &&
+						childCandidate.registeredPrefix.localeCompare(childEntry.registeredPrefix) < 0)
 				) {
-					childEntry = entry;
+					childEntry = childCandidate;
 				}
 			}
 			if (isParentPrefix) {
-				parentEntries.push(entry);
+				parentEntries.push({
+					...entry,
+					relativePath: prefix.replace(`${keyName}.`, ""),
+				});
 			}
 		}
 
@@ -544,7 +551,6 @@ export class KV {
 			return {
 				kind: "child",
 				originalKeyName: keyName,
-				resolvedKeyName: childEntry.registeredPrefix ? keyName.replace(`${childEntry.registeredPrefix}.`, "") : keyName,
 				entry: childEntry,
 			};
 		}

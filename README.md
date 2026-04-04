@@ -293,6 +293,14 @@ const storage = new Storage();
 - `getItem("@iRingo.Maps.Caches")` -> 返回该 namespace 全量键值对象
 - `getItem("@iRingo.Maps")` -> 返回 `{ Caches: { ... } }`
 
+解析顺序：
+
+1. 精确注册前缀
+2. 最长 child 前缀命中
+3. parent 前缀聚合
+4. 未命中映射时的 legacy `@root.path`
+5. 普通 plain key
+
 支持范围：
 
 - 精确注册前缀支持 `getItem` / `setItem` / `removeItem` / `clear` / `list`
@@ -302,6 +310,8 @@ const storage = new Storage();
 补充说明：
 
 - 精确注册前缀的 `setItem("@A.B.C", object)` 采用合并模式，只写入 `object` 里的顶层 key，不会删除 namespace 中未提及的旧 key
+- 精确注册前缀的批量 `setItem` / `removeItem` / `clear` 采用尽力而为语义：单个 key 失败不会回滚其他已成功项，但方法会在存在失败时返回 `false`
+- 精确注册前缀与父前缀聚合的 `getItem` 也采用尽力而为语义：单个 key 读取失败时，其它成功项仍会返回，失败项只会从聚合结果中缺席
 - 父前缀上的 `setItem` / `removeItem` 会抛错
 - 任何聚合操作都依赖目标 namespace 提供 `list()`；如果绑定没有 `list()`，则仅 direct key 访问可用
 - 多条注册前缀重叠时按最长前缀优先匹配
