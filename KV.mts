@@ -49,9 +49,9 @@ export interface KVNamespaceLike {
  * KV initialization object.
  */
 export interface KVInitOptions extends ClientOptions {
-	namespace?: KVNamespaceLike | null;
+	namespaces?: ReadonlyMap<string, KVNamespaceLike> | Record<string, KVNamespaceLike> | null;
 	env?: {
-		namespace?: KVNamespaceLike | null;
+		namespaces?: ReadonlyMap<string, KVNamespaceLike> | Record<string, KVNamespaceLike> | null;
 		[key: string]: unknown;
 	};
 	client?: Cloudflare;
@@ -61,11 +61,7 @@ export interface KVInitOptions extends ClientOptions {
 	namespaceId?: string;
 }
 
-/**
- * KV 初始化参数。
- * KV initialization input.
- */
-type KVInit = KVNamespaceLike | KVInitOptions | null | undefined;
+type KVInit = KVInitOptions | null | undefined;
 
 interface KeyListParams {
 	account_id: string;
@@ -90,31 +86,74 @@ interface ValueDeleteParams {
 	account_id: string;
 }
 
+interface KVNamespaceEntry {
+	prefix: string;
+	namespace: KVNamespaceLike;
+}
+
+type NamespaceRoute =
+	| {
+			kind: "legacy";
+			logicalKeyName: string;
+			keyName: string;
+	  }
+	| {
+			kind: "exact";
+			logicalKeyName: string;
+			keyName: string;
+			entry: KVNamespaceEntry;
+	  }
+	| {
+			kind: "child";
+			logicalKeyName: string;
+			keyName: string;
+			entry: KVNamespaceEntry;
+	  }
+	| {
+			kind: "parent";
+			logicalKeyName: string;
+			keyName: string;
+			entries: KVNamespaceEntry[];
+	  };
+
 /**
  * Cloudflare KV 异步适配器。
  * Cloudflare KV async adapter.
  *
- * `KV` 提供和 `Storage` 接近的读写接口，优先使用 Worker `KVNamespace`，其次使用 `Cloudflare` client，再其次用认证信息即时创建 client，最后回退到 util `Storage`。
- * `KV` provides a `Storage`-like read/write API, preferring a Worker `KVNamespace`, then a `Cloudflare` client, then auth-based client creation, and finally util `Storage`.
+ * `KV` 提供和 `Storage` 接近的读写接口，优先使用构造时生成的实例级 `namespaces` 生效映射：先复制静态 `KV.namespaces`，再合并 `init.namespaces`；其中 `""` 前缀代表默认 namespace 兜底。之后才是 `Cloudflare` client、认证信息即时创建 client，最后回退到 util `Storage`。
+ * `KV` provides a `Storage`-like read/write API, preferring the instance-level effective `namespaces` map created during construction: it copies static `KV.namespaces`, then merges `init.namespaces`; the `""` prefix is the default namespace fallback. After that it uses a `Cloudflare` client, auth-based client creation, and finally util `Storage`.
  *
  * 示例：
  * Example:
  *
  * ```ts
- * const kv = new KV({
- * 	apiToken: process.env.CLOUDFLARE_API_TOKEN,
- * 	account_id: "account-id",
- * 	namespace_id: "namespace-id",
- * });
+ * KV.namespaces.set("@iRingo.Maps.Caches", env.Maps);
  *
- * await kv.setItem("@settings.theme", "dark");
- * const theme = await kv.getItem("@settings.theme", "light");
+ * const kv = new KV();
+ * await kv.setItem("@iRingo.Maps.Caches.a", "dark");
+ * const caches = await kv.getItem("@iRingo.Maps.Caches", {});
  * ```
  */
 export class KV {
 	static readonly #nameRegex = /^@(?<key>[^.]+)(?:\.(?<path>.*))?$/;
 
-	readonly namespace?: KVNamespaceLike;
+	/**
+	 * 前缀到 KVNamespace 的静态注册表。
+	 * Static prefix-to-namespace registry.
+	 *
+	 * `KV` 的所有实例都会优先读取这个注册表。
+	 * All `KV` instances consult this registry before legacy backends.
+	 */
+	static readonly namespaces = new Map<string, KVNamespaceLike>();
+
+	/**
+	 * 当前实例的生效前缀映射表。
+	 * Effective prefix map for the current instance.
+	 *
+	 * 构造时会先复制静态 `KV.namespaces`，再合并 `init.namespaces`；其中 `""` 前缀代表默认 namespace。
+	 * During construction, it copies static `KV.namespaces`, then merges `init.namespaces`; the `""` prefix represents the default namespace.
+	 */
+	readonly namespaces: Map<string, KVNamespaceLike>;
 	readonly client?: Cloudflare;
 	readonly account_id?: string;
 	readonly namespace_id?: string;
@@ -123,19 +162,82 @@ export class KV {
 	 * 创建 KV 实例。
 	 * Create a KV instance.
 	 *
-	 * @param {KVInit} [init] 初始化参数 / Initialization input.
+	 * @param {KVInit} [init] 初始化参数；构造时会生成实例级 `namespaces` 生效映射：先复制静态 `KV.namespaces`，再合并 `init.namespaces`。空字符串前缀 `""` 代表默认 namespace。 / Initialization input; construction creates an instance-level effective `namespaces` map by copying static `KV.namespaces`, then merging `init.namespaces`. The empty-string prefix `""` represents the default namespace.
 	 */
 	constructor(init?: KVInit) {
-		const namespace = resolveNamespace(init);
-		const initOptions = isKVInitOptions(init) ? init : undefined;
-		this.namespace = namespace ?? undefined;
+		if (
+			typeof init === "object" &&
+			init !== null &&
+			!Array.isArray(init) &&
+			typeof (init as KVNamespaceLike).get === "function" &&
+			typeof (init as KVNamespaceLike).put === "function" &&
+			typeof (init as KVNamespaceLike).delete === "function"
+		) {
+			throw new TypeError('new KV(namespace) was removed. Use new KV({ namespaces: { "": namespace } }) instead.');
+		}
+		const initOptions = typeof init === "object" && init !== null && !Array.isArray(init) ? init : undefined;
+		if (initOptions?.namespace) {
+			throw new TypeError('KVInitOptions.namespace was removed. Use KVInitOptions.namespaces[""] instead.');
+		}
+		if (initOptions?.env && typeof initOptions.env === "object" && initOptions.env !== null && "namespace" in initOptions.env && initOptions.env.namespace) {
+			throw new TypeError('KVInitOptions.env.namespace was removed. Use KVInitOptions.env.namespaces[""] instead.');
+		}
+		const initNamespaces = initOptions?.namespaces ?? initOptions?.env?.namespaces;
+		this.namespaces = new Map<string, KVNamespaceLike>();
+		// Copy static registrations first so per-instance mappings can override them.
+		for (const [prefix, boundNamespace] of KV.namespaces) {
+			if (
+				typeof boundNamespace !== "object" ||
+				boundNamespace === null ||
+				typeof boundNamespace.get !== "function" ||
+				typeof boundNamespace.put !== "function" ||
+				typeof boundNamespace.delete !== "function"
+			) {
+				throw new TypeError(`KV.namespaces.get(${JSON.stringify(prefix)}) must return a KVNamespace-like value.`);
+			}
+			this.namespaces.set(prefix, boundNamespace);
+		}
+		if (initNamespaces && typeof initNamespaces === "object") {
+			const entries = initNamespaces instanceof Map ? initNamespaces.entries() : Object.entries(initNamespaces);
+			for (const [prefix, boundNamespace] of entries) {
+				if (
+					typeof boundNamespace !== "object" ||
+					boundNamespace === null ||
+					typeof boundNamespace.get !== "function" ||
+					typeof boundNamespace.put !== "function" ||
+					typeof boundNamespace.delete !== "function"
+				) {
+					throw new TypeError(`KVInitOptions.namespaces[${JSON.stringify(prefix)}] must be a KVNamespace-like value.`);
+				}
+				this.namespaces.set(prefix, boundNamespace);
+			}
+		}
 		this.account_id = initOptions?.account_id ?? initOptions?.accountId ?? undefined;
 		this.namespace_id = initOptions?.namespace_id ?? initOptions?.namespaceId ?? undefined;
-		if (!this.namespace && initOptions?.client) {
+		if (!this.namespaces.has("") && initOptions?.client) {
 			this.client = initOptions.client;
 			return;
 		}
-		if (!this.namespace && shouldCreateClient(initOptions)) {
+		if (
+			!this.namespaces.has("") &&
+			initOptions &&
+			!initOptions.client &&
+			[
+				"apiToken",
+				"apiKey",
+				"apiEmail",
+				"userServiceKey",
+				"baseURL",
+				"timeout",
+				"defaultHeaders",
+				"defaultQuery",
+				"maxRetries",
+				"account_id",
+				"namespace_id",
+				"accountId",
+				"namespaceId",
+			].some(key => key in initOptions)
+		) {
 			this.client = new Cloudflare(initOptions);
 		}
 	}
@@ -150,27 +252,101 @@ export class KV {
 	 * @returns {Promise<T>}
 	 */
 	async getItem<T = unknown>(keyName: string, defaultValue = null as T): Promise<T> {
+		const route = this.#resolveNamespaceRoute(keyName);
+		switch (route.kind) {
+			case "child": {
+				const keyValue = deserialize(await route.entry.namespace.get(route.keyName));
+				return (keyValue ?? defaultValue) as T;
+			}
+			case "exact": {
+				const keys = await this.#listAllNamespacedKeys(route.entry, `KV.getItem(${JSON.stringify(route.entry.prefix)})`);
+				const settledValues = await Promise.allSettled(
+					keys.map(async key => [key.name, deserialize(await route.entry.namespace.get(key.name))] as const),
+				);
+				const values = settledValues
+					.filter((result): result is PromiseFulfilledResult<readonly [string, unknown]> => result.status === "fulfilled")
+					.map(result => result.value);
+				return Object.fromEntries(values) as T;
+			}
+			case "parent": {
+				const value: Record<string, unknown> = {};
+				for (const entry of route.entries) {
+					const keys = await this.#listAllNamespacedKeys(entry, `KV.getItem(${JSON.stringify(entry.prefix)})`);
+					const settledValues = await Promise.allSettled(
+						keys.map(async key => [key.name, deserialize(await entry.namespace.get(key.name))] as const),
+					);
+					const values = settledValues
+						.filter((result): result is PromiseFulfilledResult<readonly [string, unknown]> => result.status === "fulfilled")
+						.map(result => result.value);
+					_.set(value, entry.prefix.slice(route.logicalKeyName.length + 1), Object.fromEntries(values));
+				}
+				return value as T;
+			}
+			default:
+				break;
+		}
+
 		let keyValue: unknown = defaultValue;
-		switch (keyName.startsWith("@")) {
+		switch (route.keyName.startsWith("@")) {
 			case true: {
-				const { key, path } = keyName.match(KV.#nameRegex)?.groups ?? {};
-				keyName = key ?? keyName;
-				let value = await this.getItem<Record<string, unknown>>(keyName, {});
+				const { key, path } = route.keyName.match(KV.#nameRegex)?.groups ?? {};
+				const rootKeyName = key ?? route.keyName;
+				let value = await this.getItem<Record<string, unknown>>(rootKeyName, {});
 				if (typeof value !== "object" || value === null) value = {};
 				keyValue = _.get(value, path);
 				keyValue = deserialize(keyValue);
 				break;
 			}
 			default:
+				// The empty-string prefix is the default namespace fallback for plain keys.
+				const defaultNamespace = this.namespaces.get("");
 				switch (true) {
-					case Boolean(this.namespace):
-						keyValue = await this.namespace!.get(keyName);
+					case typeof defaultNamespace !== "undefined":
+						keyValue = await defaultNamespace.get(route.keyName);
 						break;
-					case this.#hasCloudflareBackend():
-						keyValue = await this.#getCloudflareValue(keyName);
+					// Check whether the Cloudflare REST KV backend is fully configured.
+					case Boolean(this.client && this.account_id && this.namespace_id): {
+						const params: ValueGetParams = {
+							account_id: this.account_id!,
+						};
+						try {
+							const response = await this.client!.kv.namespaces.values.get(this.namespace_id!, route.keyName, params);
+							switch (response.status) {
+								case 404:
+									keyValue = null;
+									break;
+								default:
+									switch (true) {
+										case typeof response.body === "string":
+											keyValue = response.body;
+											break;
+										case response.bodyBytes instanceof ArrayBuffer:
+											keyValue = new TextDecoder().decode(response.bodyBytes);
+											break;
+										case response.body instanceof ArrayBuffer:
+											keyValue = new TextDecoder().decode(response.body);
+											break;
+										default:
+											keyValue = "";
+											break;
+									}
+							}
+						} catch (error) {
+							if (
+								error &&
+								typeof error === "object" &&
+								"status" in error &&
+								Number((error as { status?: number }).status) === 404
+							) {
+								keyValue = null;
+								break;
+							}
+							throw error;
+						}
 						break;
+					}
 					default:
-						keyValue = Storage.getItem(keyName, defaultValue);
+						keyValue = Storage.getItem(route.keyName, defaultValue);
 						break;
 				}
 				keyValue = deserialize(keyValue);
@@ -188,30 +364,59 @@ export class KV {
 	 * @returns {Promise<boolean>}
 	 */
 	async setItem(keyName: string = String(), keyValue: unknown = String()): Promise<boolean> {
+		const route = this.#resolveNamespaceRoute(keyName);
+		switch (route.kind) {
+			case "child":
+				await route.entry.namespace.put(route.keyName, serialize(keyValue));
+				return true;
+			case "exact": {
+				if (!keyValue || typeof keyValue !== "object" || Array.isArray(keyValue)) {
+					throw new TypeError(`KV.setItem(${JSON.stringify(route.logicalKeyName)}) requires an object value for exact registered prefixes in KV.namespaces.`);
+				}
+				const results = await Promise.allSettled(
+					Object.entries(keyValue).map(async ([name, value]) => {
+						await route.entry.namespace.put(name, serialize(value));
+					}),
+				);
+				return results.every(result => result.status === "fulfilled");
+			}
+			case "parent":
+				throw new TypeError(`KV.setItem(${JSON.stringify(route.logicalKeyName)}) does not support parent registered prefixes in KV.namespaces.`);
+			default:
+				break;
+		}
+
 		let result = false;
 		const serializedValue = serialize(keyValue);
-		switch (keyName.startsWith("@")) {
+		switch (route.keyName.startsWith("@")) {
 			case true: {
-				const { key, path } = keyName.match(KV.#nameRegex)?.groups ?? {};
-				keyName = key ?? keyName;
-				let value = await this.getItem<Record<string, unknown>>(keyName, {});
+				const { key, path } = route.keyName.match(KV.#nameRegex)?.groups ?? {};
+				const rootKeyName = key ?? route.keyName;
+				let value = await this.getItem<Record<string, unknown>>(rootKeyName, {});
 				if (typeof value !== "object" || value === null) value = {};
 				_.set(value, path, serializedValue);
-				result = await this.setItem(keyName, value);
+				result = await this.setItem(rootKeyName, value);
 				break;
 			}
 			default:
+				const defaultNamespace = this.namespaces.get("");
 				switch (true) {
-					case Boolean(this.namespace):
-						await this.namespace!.put(keyName, serializedValue);
+					case typeof defaultNamespace !== "undefined":
+						await defaultNamespace.put(route.keyName, serializedValue);
 						result = true;
 						break;
-					case this.#hasCloudflareBackend():
-						await this.#setCloudflareValue(keyName, serializedValue);
+					// Check whether the Cloudflare REST KV backend is fully configured.
+					case Boolean(this.client && this.account_id && this.namespace_id): {
+						const params: ValueUpdateParams = {
+							account_id: this.account_id!,
+							value: serializedValue,
+						};
+						await this.client!.kv.namespaces.values.update(this.namespace_id!, route.keyName, params);
 						result = true;
 						break;
+					}
 					default:
-						result = Storage.setItem(keyName, serializedValue);
+						result = Storage.setItem(route.keyName, serializedValue);
 						break;
 				}
 				break;
@@ -227,29 +432,51 @@ export class KV {
 	 * @returns {Promise<boolean>}
 	 */
 	async removeItem(keyName: string): Promise<boolean> {
+		const route = this.#resolveNamespaceRoute(keyName);
+		switch (route.kind) {
+			case "child":
+				await route.entry.namespace.delete(route.keyName);
+				return true;
+			case "exact": {
+				const keys = await this.#listAllNamespacedKeys(route.entry, `KV.clear(${JSON.stringify(route.logicalKeyName)})`);
+				const results = await Promise.allSettled(keys.map(async key => await route.entry.namespace.delete(key.name)));
+				return results.every(result => result.status === "fulfilled");
+			}
+			case "parent":
+				throw new TypeError(`KV.removeItem(${JSON.stringify(route.logicalKeyName)}) does not support parent registered prefixes in KV.namespaces.`);
+			default:
+				break;
+		}
+
 		let result = false;
-		switch (keyName.startsWith("@")) {
+		switch (route.keyName.startsWith("@")) {
 			case true: {
-				const { key, path } = keyName.match(KV.#nameRegex)?.groups ?? {};
-				keyName = key ?? keyName;
-				let value = await this.getItem<Record<string, unknown>>(keyName, {});
+				const { key, path } = route.keyName.match(KV.#nameRegex)?.groups ?? {};
+				const rootKeyName = key ?? route.keyName;
+				let value = await this.getItem<Record<string, unknown>>(rootKeyName, {});
 				if (typeof value !== "object" || value === null) value = {};
 				_.unset(value, path);
-				result = await this.setItem(keyName, value);
+				result = await this.setItem(rootKeyName, value);
 				break;
 			}
 			default:
+				const defaultNamespace = this.namespaces.get("");
 				switch (true) {
-					case Boolean(this.namespace):
-						await this.namespace!.delete(keyName);
+					case typeof defaultNamespace !== "undefined":
+						await defaultNamespace.delete(route.keyName);
 						result = true;
 						break;
-					case this.#hasCloudflareBackend():
-						await this.#deleteCloudflareValue(keyName);
+					// Check whether the Cloudflare REST KV backend is fully configured.
+					case Boolean(this.client && this.account_id && this.namespace_id): {
+						const params: ValueDeleteParams = {
+							account_id: this.account_id!,
+						};
+						await this.client!.kv.namespaces.values.delete(this.namespace_id!, route.keyName, params);
 						result = true;
 						break;
+					}
 					default:
-						result = Storage.removeItem(keyName);
+						result = Storage.removeItem(route.keyName);
 						break;
 				}
 				break;
@@ -261,121 +488,237 @@ export class KV {
 	 * 清空存储。
 	 * Clear storage.
 	 *
+	 * 无参时保持 legacy 语义并返回 `false`。
+	 * Without arguments, keeps legacy behavior and returns `false`.
+	 *
 	 * @returns {Promise<boolean>}
 	 */
-	async clear(): Promise<boolean> {
-		return false;
+	async clear(): Promise<boolean>;
+	/**
+	 * 清空精确注册前缀对应的 KVNamespace。
+	 * Clear the KVNamespace bound to an exact registered prefix.
+	 *
+	 * @param {string} keyName 精确注册前缀 / Exact registered prefix.
+	 * @returns {Promise<boolean>}
+	 */
+	async clear(keyName: string): Promise<boolean>;
+	async clear(keyName?: string): Promise<boolean> {
+		if (typeof keyName !== "string") {
+			return false;
+		}
+		const route = this.#resolveNamespaceRoute(keyName);
+		if (route.kind !== "exact") {
+			throw new TypeError(`KV.clear(${JSON.stringify(keyName)}) requires an exact registered prefix in KV.namespaces.`);
+		}
+		const keys = await this.#listAllNamespacedKeys(route.entry, `KV.clear(${JSON.stringify(route.logicalKeyName)})`);
+		const results = await Promise.allSettled(keys.map(async key => await route.entry.namespace.delete(key.name)));
+		return results.every(result => result.status === "fulfilled");
 	}
 
 	/**
 	 * 列出 KV 键。
 	 * List KV keys.
 	 *
+	 * 传入 options 时始终走 legacy backend；传入 string 时使用 `KV.namespaces` 做 exact / parent 注册前缀解析。
+	 * Passing options always uses legacy backends; passing a string resolves exact / parent registered prefixes via `KV.namespaces`.
+	 *
+	 * @param {KVListOptions} [options] legacy 列举选项 / Legacy list options.
+	 * @returns {Promise<KVListResult>}
+	 */
+	async list(options?: KVListOptions): Promise<KVListResult>;
+	/**
+	 * 列出注册前缀对应的 KV 键。
+	 * List keys for a registered prefix.
+	 *
+	 * @param {string} keyName 精确或父级注册前缀 / Exact or parent registered prefix.
 	 * @param {KVListOptions} [options={}] 列举选项 / List options.
 	 * @returns {Promise<KVListResult>}
 	 */
-	async list(options: KVListOptions = {}): Promise<KVListResult> {
-		switch (true) {
-			case Boolean(this.namespace):
-				if (typeof this.namespace!.list !== "function") {
-					throw new TypeError("KV.list() requires a namespace binding with list().");
+	async list(keyName: string, options?: KVListOptions): Promise<KVListResult>;
+	async list(keyNameOrOptions: string | KVListOptions = {}, options: KVListOptions = {}): Promise<KVListResult> {
+		if (typeof keyNameOrOptions === "string") {
+			const route = this.#resolveNamespaceRoute(keyNameOrOptions);
+			switch (route.kind) {
+				case "exact":
+					if (typeof route.entry.namespace.list !== "function") {
+						throw new TypeError(`KV.list(${JSON.stringify(route.entry.prefix)}) requires namespace.list() for registered prefix ${JSON.stringify(route.entry.prefix)}.`);
+					}
+					return await route.entry.namespace.list!(options);
+				case "parent": {
+					const keysByName = new Map<string, KVListKey>();
+					for (const entry of route.entries) {
+						const relativePath = entry.prefix.slice(route.logicalKeyName.length + 1);
+						const keys = await this.#listAllNamespacedKeys(entry, `KV.list(${JSON.stringify(route.logicalKeyName)})`);
+						for (const key of keys) {
+							const name = relativePath ? `${relativePath}.${key.name}` : key.name;
+							if (options.prefix && !name.startsWith(options.prefix)) {
+								continue;
+							}
+							keysByName.set(name, {
+								...key,
+								name,
+							});
+						}
+					}
+					return {
+						keys: Array.from(keysByName.values()),
+						list_complete: true,
+						cursor: "",
+					};
 				}
-				return await this.namespace!.list!(options);
-			case this.#hasCloudflareBackend():
-				return await this.#listCloudflareKeys(options);
+				case "child":
+					throw new TypeError(`KV.list(${JSON.stringify(route.logicalKeyName)}) does not support child keys registered in KV.namespaces.`);
+				default:
+					throw new TypeError(`KV.list(${JSON.stringify(keyNameOrOptions)}) requires an exact or parent registered prefix in KV.namespaces.`);
+			}
+		}
+
+		const defaultNamespace = this.namespaces.get("");
+		switch (true) {
+			case typeof defaultNamespace !== "undefined":
+				if (typeof defaultNamespace.list !== "function") {
+					throw new TypeError("KV.list() requires the default namespace binding to provide list().");
+				}
+				return await defaultNamespace.list(keyNameOrOptions);
+				// Check whether the Cloudflare REST KV backend is fully configured.
+				case Boolean(this.client && this.account_id && this.namespace_id): {
+					const params: KeyListParams = {
+						account_id: this.account_id!,
+						prefix: keyNameOrOptions.prefix,
+						limit: keyNameOrOptions.limit,
+						cursor: keyNameOrOptions.cursor,
+					};
+					const keys = await this.client!.kv.namespaces.keys.list(this.namespace_id!, params);
+					return {
+						keys: keys as KVListKey[],
+						list_complete: true,
+						cursor: "",
+					};
+				}
 			default:
-				throw new TypeError("KV.list() requires a namespace binding or a Cloudflare KV backend.");
+				throw new TypeError('KV.list() requires a default namespace binding in namespaces[""] or a Cloudflare KV backend.');
 		}
 	}
 
-	#hasCloudflareBackend(): boolean {
-		return Boolean(this.client && this.account_id && this.namespace_id);
-	}
-
-	async #getCloudflareValue(keyName: string): Promise<string | null> {
-		const params: ValueGetParams = {
-			account_id: this.account_id!,
-		};
-		try {
-			const response = await this.client!.kv.namespaces.values.get(this.namespace_id!, keyName, params);
-			return await readResponseText(response);
-		} catch (error) {
-			if (isNotFoundError(error)) return null;
-			throw error;
+	/**
+	 * 统一解析 keyName。
+	 * Resolve keyName against the instance-level effective namespace map before falling back to legacy behavior.
+	 *
+	 * 匹配顺序：
+	 * Match order:
+	 * 1. `KV.namespaces.get(keyName)` 精确命中 / exact hit
+	 * 2. `keyName.startsWith(prefix + ".")` 的最长前缀 / longest child prefix
+	 * 3. `prefix.startsWith(keyName + ".")` 的父前缀聚合 / parent-prefix aggregation
+	 * 4. 未命中时返回 legacy / legacy fallback when unmatched
+	 *
+	 * child 命中后会切掉前缀和分隔点，只保留后缀作为真实 keyName。
+	 * After a child match, the prefix and separator are removed and only the suffix is kept as the real keyName.
+	 *
+	 * @param {string} keyName 传入的逻辑键 / Incoming logical key.
+	 * @returns {NamespaceRoute}
+	 */
+	#resolveNamespaceRoute(keyName: string): NamespaceRoute {
+		const exactNamespace = this.namespaces.get(keyName);
+		if (typeof exactNamespace !== "undefined") {
+			return {
+				kind: "exact",
+				logicalKeyName: keyName,
+				keyName,
+				entry: {
+					prefix: keyName,
+					namespace: exactNamespace,
+				},
+			};
 		}
-	}
 
-	async #setCloudflareValue(keyName: string, value: string): Promise<void> {
-		const params: ValueUpdateParams = {
-			account_id: this.account_id!,
-			value,
-		};
-		await this.client!.kv.namespaces.values.update(this.namespace_id!, keyName, params);
-	}
+		const childEntries: KVNamespaceEntry[] = [];
+		const parentEntries: KVNamespaceEntry[] = [];
+		for (const [prefix, namespace] of this.namespaces) {
+			const isChildPrefix = prefix === "" ? !keyName.startsWith("@") : keyName.startsWith(`${prefix}.`);
+			const isParentPrefix = prefix.startsWith(`${keyName}.`);
+			if (!isChildPrefix && !isParentPrefix) {
+				continue;
+			}
+			const entry = { prefix, namespace };
+			if (isChildPrefix) {
+				childEntries.push(entry);
+			}
+			if (isParentPrefix) {
+				parentEntries.push(entry);
+			}
+		}
 
-	async #deleteCloudflareValue(keyName: string): Promise<void> {
-		const params: ValueDeleteParams = {
-			account_id: this.account_id!,
-		};
-		await this.client!.kv.namespaces.values.delete(this.namespace_id!, keyName, params);
-	}
+		if (childEntries.length) {
+			const entry = [...childEntries].sort((a, b) => {
+				if (a.prefix.length !== b.prefix.length) {
+					return b.prefix.length - a.prefix.length;
+				}
+				return a.prefix.localeCompare(b.prefix);
+			})[0]!;
+			return {
+				kind: "child",
+				logicalKeyName: keyName,
+				keyName: entry.prefix ? keyName.slice(entry.prefix.length + 1) : keyName,
+				entry,
+			};
+		}
 
-	async #listCloudflareKeys(options: KVListOptions): Promise<KVListResult> {
-		const params: KeyListParams = {
-			account_id: this.account_id!,
-			prefix: options.prefix,
-			limit: options.limit,
-			cursor: options.cursor,
-		};
-		const keys = await this.client!.kv.namespaces.keys.list(this.namespace_id!, params);
+		if (parentEntries.length) {
+			return {
+				kind: "parent",
+				logicalKeyName: keyName,
+				keyName,
+				entries: [...parentEntries].sort((a, b) => {
+					if (a.prefix.length !== b.prefix.length) {
+						return a.prefix.length - b.prefix.length;
+					}
+					return a.prefix.localeCompare(b.prefix);
+				}),
+			};
+		}
+
 		return {
-			keys: keys as KVListKey[],
-			list_complete: true,
-			cursor: "",
+			kind: "legacy",
+			logicalKeyName: keyName,
+			keyName,
 		};
 	}
-}
 
-function resolveNamespace(init?: KVInit): KVNamespaceLike | null | undefined {
-	if (isNamespaceLike(init)) return init;
-	if (!isKVInitOptions(init)) return undefined;
-	return init.namespace ?? init.env?.namespace;
-}
+	/**
+	 * 分页拉取某个注册 namespace 的全部键。
+	 * Fetch all keys from a registered namespace across pages.
+	 *
+	 * @param {KVNamespaceEntry} entry 注册前缀条目 / Registered prefix entry.
+	 * @param {string} operation 报错时使用的操作名 / Operation name used in errors.
+	 * @returns {Promise<KVListKey[]>}
+	 */
+	async #listAllNamespacedKeys(entry: KVNamespaceEntry, operation: string): Promise<KVListKey[]> {
+		if (typeof entry.namespace.list !== "function") {
+			throw new TypeError(`${operation} requires namespace.list() for registered prefix ${JSON.stringify(entry.prefix)}.`);
+		}
+		const keys: KVListKey[] = [];
+		const seenCursors = new Set<string>();
+		let cursor: string | undefined;
+		while (true) {
+			const result = await entry.namespace.list!({ cursor });
+			keys.push(...result.keys);
+			if (result.list_complete || !result.cursor || seenCursors.has(result.cursor)) {
+				break;
+			}
+			seenCursors.add(result.cursor);
+			cursor = result.cursor;
+		}
+		return keys;
+	}
 
-function isNamespaceLike(value: unknown): value is KVNamespaceLike {
-	return (
-		typeof value === "object" &&
-		value !== null &&
-		typeof (value as KVNamespaceLike).get === "function" &&
-		typeof (value as KVNamespaceLike).put === "function" &&
-		typeof (value as KVNamespaceLike).delete === "function"
-	);
 }
-
-function isKVInitOptions(value: unknown): value is KVInitOptions {
-	return typeof value === "object" && value !== null && !isNamespaceLike(value);
-}
-
-function shouldCreateClient(init?: KVInitOptions): boolean {
-	if (!init) return false;
-	if (init.client) return false;
-	return [
-		"apiToken",
-		"apiKey",
-		"apiEmail",
-		"userServiceKey",
-		"baseURL",
-		"timeout",
-		"defaultHeaders",
-		"defaultQuery",
-		"maxRetries",
-		"account_id",
-		"namespace_id",
-		"accountId",
-		"namespaceId",
-	].some(key => key in init);
-}
-
+/**
+ * 尝试将存储值反序列化为 JSON；失败时返回原值。
+ * Attempt to deserialize a stored value as JSON; return the raw value on failure.
+ *
+ * @param {unknown} value 存储原值 / Stored raw value.
+ * @returns {unknown}
+ */
 function deserialize(value: unknown): unknown {
 	try {
 		return JSON.parse(value as string);
@@ -384,6 +727,13 @@ function deserialize(value: unknown): unknown {
 	}
 }
 
+/**
+ * 将任意值序列化为可存储字符串。
+ * Serialize any value into a storable string.
+ *
+ * @param {unknown} value 待序列化值 / Value to serialize.
+ * @returns {string}
+ */
 function serialize(value: unknown): string {
 	switch (typeof value) {
 		case "object":
@@ -393,29 +743,3 @@ function serialize(value: unknown): string {
 	}
 }
 
-async function readResponseText(response: FetchResponse): Promise<string | null> {
-	switch (response.status) {
-		case 404:
-			return null;
-		default:
-			switch (true) {
-				case typeof response.body === "string":
-					return response.body;
-				case response.bodyBytes instanceof ArrayBuffer:
-					return new TextDecoder().decode(response.bodyBytes);
-				case response.body instanceof ArrayBuffer:
-					return new TextDecoder().decode(response.body);
-				default:
-					return "";
-			}
-	}
-}
-
-function isNotFoundError(error: unknown): boolean {
-	return Boolean(
-		error &&
-			typeof error === "object" &&
-			"status" in error &&
-			Number((error as { status?: number }).status) === 404,
-	);
-}
