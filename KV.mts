@@ -312,7 +312,7 @@ export class KV {
 					const values = settledValues
 						.filter((result): result is PromiseFulfilledResult<readonly [string, unknown]> => result.status === "fulfilled")
 						.map(result => result.value);
-					_.set(value, entry.registeredPrefix.slice(route.originalKeyName.length + 1), Object.fromEntries(values));
+					_.set(value, entry.registeredPrefix.replace(`${route.originalKeyName}.`, ""), Object.fromEntries(values));
 				}
 				return value as T;
 			}
@@ -565,7 +565,7 @@ export class KV {
 				case "parent": {
 					const keysByName = new Map<string, KVListKey>();
 					for (const entry of route.entries) {
-						const relativePath = entry.registeredPrefix.slice(route.originalKeyName.length + 1);
+						const relativePath = entry.registeredPrefix.replace(`${route.originalKeyName}.`, "");
 						const keys = await this.#listAllNamespacedKeys(entry, `KV.list(${JSON.stringify(route.originalKeyName)})`);
 						for (const key of keys) {
 							const name = relativePath ? `${relativePath}.${key.name}` : key.name;
@@ -623,13 +623,22 @@ export class KV {
 	 * 统一解析 keyName。
 	 * Resolve keyName against the instance-level effective namespace map before falling back to legacy behavior.
 	 *
-	 * 匹配顺序：
-	 * Match order:
-	 * 1. `KV.namespaces.get(keyName)` 精确命中 / exact hit
-	 * 2. `keyName.startsWith(prefix + ".")` 的最长前缀 / longest child prefix
-	 * 3. `prefix.startsWith(keyName + ".")` 的父前缀聚合 / parent-prefix aggregation
-	 * 4. 未命中且原始 key 以 `@` 开头时返回 legacy / return legacy when unmatched and the original key starts with `@`
-	 * 5. 其余未命中返回 normal / remaining unmatched keys return normal
+	 * 执行步骤：
+	 * Execution steps:
+	 * 1. 先用 `KV.namespaces.get(keyName)` 尝试精确命中；命中后立即返回 `exact`，不再继续扫描。 / First try an exact hit via `KV.namespaces.get(keyName)`; return `exact` immediately when matched and skip further scanning.
+	 * 2. 再用 `KV.#nameRegex` 对原始 key 做一次单点解析，预先判断它是否属于 `@path` 语义，并复用这份结果给后续 legacy / normal 判定。 / Then parse the original key once with `KV.#nameRegex` to determine whether it belongs to `@path` semantics, and reuse that result for later legacy / normal routing.
+	 * 3. 之后遍历 `this.namespaces.entries()`：空前缀 `""` 先单独处理，只接收非 legacy key；其余前缀的 child 用 `keyName.startsWith(prefix + ".")` 判断，parent 用 `prefix.startsWith(keyName + ".")` 判断。 / After that, iterate `this.namespaces.entries()`: the empty prefix `""` is handled first and only accepts non-legacy keys; for all other prefixes, child uses `keyName.startsWith(prefix + ".")` and parent uses `prefix.startsWith(keyName + ".")`.
+	 * 4. 如果存在 child 命中，则在扫描过程中持续保留“最长前缀优先”的最佳命中。 / If a child match exists, keep the current best match during the scan with longest-prefix priority.
+	 * 5. 否则如果存在 parent 候选，则按前缀长度从短到长排序后返回聚合路由。 / Otherwise, if parent candidates exist, sort them from shorter to longer prefixes and return the aggregation route.
+	 * 6. 最后才根据第二步的 regex 结果，在未命中注册前缀时返回 `legacy` 或 `normal`。 / Finally, fall back to `legacy` or `normal` based on the regex result from step 2 when no registered prefix matches.
+	 *
+	 * 最终返回规则：
+	 * Final route rules:
+	 * 1. 精确命中返回 `exact`。 / Exact hits return `exact`.
+	 * 2. 子路径命中返回 `child`。 / Descendant-prefix hits return `child`.
+	 * 3. 父级聚合命中返回 `parent`。 / Parent aggregation hits return `parent`.
+	 * 4. 未命中但 regex 命中返回 `legacy`。 / Unmatched keys with a regex hit return `legacy`.
+	 * 5. 其余情况返回 `normal`。 / All remaining unmatched keys return `normal`.
 	 *
 	 * 返回值中的 `originalKeyName` 始终保留调用方原始输入；只有 child 路由会额外给出 `resolvedKeyName`，而 legacy 路由会额外给出 `rootKeyName` / `path`，用于指出后续 `@path` 读改写实际操作的根 key 与属性路径。
 	 * The returned `originalKeyName` always keeps the caller's original input; only the child route adds `resolvedKeyName`, while the legacy route adds `rootKeyName` / `path` to indicate the root key and property path used by subsequent `@path` read-modify-write operations.
@@ -641,6 +650,8 @@ export class KV {
 	 * @returns {NamespaceRoute}
 	 */
 	#resolveNamespaceRoute(keyName: string): NamespaceRoute {
+		// 第一步：先做精确命中，命中后直接返回。
+		// Step 1: perform the exact lookup first and return immediately on hit.
 		const exactNamespace = this.namespaces.get(keyName);
 		if (typeof exactNamespace !== "undefined") {
 			return {
@@ -652,36 +663,52 @@ export class KV {
 				},
 			};
 		}
+		// 第二步：只解析一次 `@path` 语义，供后续 normal / legacy / empty-prefix 判断复用。
+		// Step 2: parse `@path` exactly once so normal / legacy / empty-prefix checks can reuse it.
+		const legacyMatch = keyName.match(KV.#nameRegex);
 
-		const childEntries: KVNamespaceEntry[] = [];
+		// 第三步：扫描全部注册前缀；空前缀先单独处理，其他前缀再分别判断 child / parent。
+		// Step 3: scan all registered prefixes; handle the empty prefix first, then evaluate child / parent for every other prefix.
+		let childEntry: KVNamespaceEntry | undefined;
 		const parentEntries: KVNamespaceEntry[] = [];
-		for (const [registeredPrefix, namespaceBinding] of this.namespaces) {
-			const isChildPrefix = registeredPrefix === "" ? !keyName.startsWith("@") : keyName.startsWith(`${registeredPrefix}.`);
-			const isParentPrefix = registeredPrefix.startsWith(`${keyName}.`);
+		for (const [prefix, binding] of this.namespaces) {
+			if (prefix === "") {
+				if (!legacyMatch) {
+					childEntry = {
+						registeredPrefix: prefix,
+						namespaceBinding: binding,
+					};
+				}
+				continue;
+			}
+
+			const isChildPrefix = keyName.startsWith(`${prefix}.`);
+			const isParentPrefix = prefix.startsWith(`${keyName}.`);
 			if (!isChildPrefix && !isParentPrefix) {
 				continue;
 			}
-			const entry = { registeredPrefix, namespaceBinding };
+			const entry = { registeredPrefix: prefix, namespaceBinding: binding };
 			if (isChildPrefix) {
-				childEntries.push(entry);
+				if (
+					typeof childEntry === "undefined" ||
+					entry.registeredPrefix.length > childEntry.registeredPrefix.length ||
+					(entry.registeredPrefix.length === childEntry.registeredPrefix.length &&
+						entry.registeredPrefix.localeCompare(childEntry.registeredPrefix) < 0)
+				) {
+					childEntry = entry;
+				}
 			}
 			if (isParentPrefix) {
 				parentEntries.push(entry);
 			}
 		}
 
-		if (childEntries.length) {
-			const entry = [...childEntries].sort((a, b) => {
-				if (a.registeredPrefix.length !== b.registeredPrefix.length) {
-					return b.registeredPrefix.length - a.registeredPrefix.length;
-				}
-				return a.registeredPrefix.localeCompare(b.registeredPrefix);
-			})[0]!;
+		if (childEntry) {
 			return {
 				kind: "child",
 				originalKeyName: keyName,
-				resolvedKeyName: entry.registeredPrefix ? keyName.slice(entry.registeredPrefix.length + 1) : keyName,
-				entry,
+				resolvedKeyName: childEntry.registeredPrefix ? keyName.replace(`${childEntry.registeredPrefix}.`, "") : keyName,
+				entry: childEntry,
 			};
 		}
 
@@ -698,8 +725,8 @@ export class KV {
 			};
 		}
 
-		if (keyName.startsWith("@")) {
-			const { key, path } = keyName.match(KV.#nameRegex)?.groups ?? {};
+		if (legacyMatch) {
+			const { key, path } = legacyMatch.groups ?? {};
 			return {
 				kind: "legacy",
 				originalKeyName: keyName,
